@@ -3,7 +3,7 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -13,7 +13,7 @@ use rbvg_voxel::registry::parse_namespaced;
 use thiserror::Error;
 
 use crate::API_VERSION;
-use crate::events::{ScriptCommand, ScriptEvent};
+use crate::events::{Envelope, EventOrigin, ScriptCommand, ScriptEvent};
 use crate::manifest::{Capability, ModManifest};
 use crate::query::WorldQuery;
 
@@ -24,6 +24,9 @@ const SCHEDULED_KEY: &str = "rbvg_scheduled";
 const QUERY_KEY: &str = "rbvg_world_query";
 /// Shortest `scheduler.every` interval, so repeating callbacks cannot run every frame.
 pub const MIN_REPEAT_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Longest `ui.notify` message, in characters.
+pub const MAX_NOTIFY_CHARS: usize = 200;
 
 /// Resource limits applied to every mod.
 #[derive(Debug, Clone)]
@@ -71,6 +74,8 @@ pub struct DispatchStats {
     pub errors: usize,
     /// Scheduled callbacks run (ticks only).
     pub callbacks: usize,
+    /// A handler of a cancellable event called `event.cancel()`.
+    pub cancelled: bool,
 }
 
 type Deadline = Arc<Mutex<Option<Instant>>>;
@@ -251,6 +256,19 @@ impl ScriptHost {
         event: &ScriptEvent,
         world: &dyn WorldQuery,
     ) -> (Vec<ScriptCommand>, DispatchStats) {
+        self.dispatch_envelope(&Envelope::player(event.clone()), world)
+    }
+
+    /// Like [`Self::dispatch`] with explicit origin and depth. For cancellable events,
+    /// every subscribed handler still runs (in mod load order); the event is cancelled if
+    /// any of them called `event.cancel()` ([`DispatchStats::cancelled`]).
+    pub fn dispatch_envelope(
+        &self,
+        env: &Envelope,
+        world: &dyn WorldQuery,
+    ) -> (Vec<ScriptCommand>, DispatchStats) {
+        let event = &env.event;
+        let cancelled = Arc::new(AtomicBool::new(false));
         let start = Instant::now();
         let mut errors = 0;
         let mut out = Vec::new();
@@ -260,7 +278,7 @@ impl ScriptHost {
                 let Some(list) = handlers.get::<Option<Table>>(event.name())? else {
                     return Ok(0);
                 };
-                let payload = event_payload(lua, event)?;
+                let payload = event_payload(lua, env, &cancelled)?;
                 let mut failed = 0;
                 for f in list.sequence_values::<Function>() {
                     if let Err(e) = f.and_then(|f| f.call::<()>(&payload)) {
@@ -283,6 +301,7 @@ impl ScriptHost {
             duration: start.elapsed(),
             errors,
             callbacks: 0,
+            cancelled: cancelled.load(Ordering::Relaxed),
         };
         (out, stats)
     }
@@ -373,13 +392,25 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn event_payload(lua: &Lua, event: &ScriptEvent) -> mlua::Result<Table> {
+fn event_payload(lua: &Lua, env: &Envelope, cancelled: &Arc<AtomicBool>) -> mlua::Result<Table> {
+    let event = &env.event;
     let t = lua.create_table()?;
-    match event {
-        ScriptEvent::BlockBroken { pos, block } | ScriptEvent::BlockPlaced { pos, block } => {
-            t.set("position", pos_table(lua, *pos)?)?;
-            t.set("block", block.as_str())?;
-        }
+    t.set("position", pos_table(lua, event.pos())?)?;
+    t.set("block", event.block())?;
+    t.set("origin", env.origin.kind())?;
+    if let EventOrigin::Mod(id) = &env.origin {
+        t.set("origin_mod", id.as_str())?;
+    }
+    t.set("depth", env.depth)?;
+    if event.cancellable() {
+        let flag = cancelled.clone();
+        t.set(
+            "cancel",
+            lua.create_function(move |_, ()| {
+                flag.store(true, Ordering::Relaxed);
+                Ok(())
+            })?,
+        )?;
     }
     Ok(t)
 }
@@ -557,6 +588,40 @@ fn create_instance(
             Ok(())
         })?,
     )?;
+    let ui = lua.create_table()?;
+    let (q, can_notify, max, id) = (
+        commands.clone(),
+        manifest.has(Capability::UiNotify),
+        config.max_commands,
+        manifest.id.clone(),
+    );
+    ui.set(
+        "notify",
+        lua.create_function(move |_, message: String| {
+            if !can_notify {
+                return Err(mlua::Error::runtime(
+                    "ui.notify requires the `ui.notify` capability in mod.toml",
+                ));
+            }
+            if message.is_empty() || message.chars().count() > MAX_NOTIFY_CHARS {
+                return Err(mlua::Error::runtime(format!(
+                    "ui.notify: message must be 1..={MAX_NOTIFY_CHARS} characters"
+                )));
+            }
+            let mut q = lock(&q);
+            if q.len() >= max {
+                return Err(mlua::Error::runtime(format!(
+                    "too many commands in one event (max {max})"
+                )));
+            }
+            q.push(ScriptCommand::Notify {
+                mod_id: id.clone(),
+                message,
+            });
+            Ok(())
+        })?,
+    )?;
+    globals.set("ui", ui)?;
     let can_read = manifest.has(Capability::WorldRead);
     let query = move |lua: &Lua, args: MultiValue, api: &str| -> mlua::Result<Option<String>> {
         if !can_read {
@@ -657,7 +722,10 @@ mod tests {
 
     fn xs(cmds: &[ScriptCommand]) -> Vec<i32> {
         cmds.iter()
-            .map(|ScriptCommand::SetBlock { pos, .. }| pos.x)
+            .filter_map(|c| match c {
+                ScriptCommand::SetBlock { pos, .. } => Some(pos.x),
+                _ => None,
+            })
             .collect()
     }
 
@@ -680,6 +748,9 @@ mod tests {
             api_version: API_VERSION,
             entry: "main.luau".into(),
             capabilities: caps,
+            dependencies: Vec::new(),
+            optional_dependencies: Vec::new(),
+            blocks: None,
             dir: PathBuf::new(),
         }
     }

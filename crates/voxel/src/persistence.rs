@@ -87,6 +87,23 @@ pub fn load_chunks(
     decode_chunks(&fs::read(dir.join(CHUNKS_FILE))?, registry)
 }
 
+/// Like [`load_chunks`], but blocks whose content is not installed (e.g. a disabled mod)
+/// are registered as "missing" placeholders, so saving again keeps their persistent ids.
+pub fn load_chunks_lenient(
+    dir: &Path,
+    registry: &mut BlockRegistry,
+) -> Result<Vec<(ChunkPos, Chunk)>, PersistError> {
+    let bytes = fs::read(dir.join(CHUNKS_FILE))?;
+    for name in palette_names(&bytes)? {
+        if registry.id(&name).is_none() {
+            registry
+                .register_missing(&name)
+                .map_err(|_| PersistError::Corrupt("invalid block id in palette"))?;
+        }
+    }
+    decode_chunks(&bytes, registry)
+}
+
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp = path.with_extension("tmp");
     {
@@ -120,11 +137,7 @@ fn encode_chunks(world: &VoxelWorld, registry: &BlockRegistry) -> Vec<u8> {
     out
 }
 
-fn decode_chunks(
-    mut bytes: &[u8],
-    registry: &BlockRegistry,
-) -> Result<Vec<(ChunkPos, Chunk)>, PersistError> {
-    let r = &mut bytes;
+fn read_header(r: &mut &[u8]) -> Result<Vec<String>, PersistError> {
     let mut magic = [0u8; 8];
     read(r, &mut magic)?;
     if &magic != MAGIC {
@@ -138,7 +151,7 @@ fn decode_chunks(
     if palette_len > usize::from(u16::MAX) + 1 {
         return Err(PersistError::Corrupt("palette too large"));
     }
-    let mut palette = Vec::with_capacity(palette_len);
+    let mut names = Vec::with_capacity(palette_len);
     for _ in 0..palette_len {
         let mut len = [0u8; 2];
         read(r, &mut len)?;
@@ -146,8 +159,23 @@ fn decode_chunks(
         read(r, &mut name)?;
         let name =
             String::from_utf8(name).map_err(|_| PersistError::Corrupt("palette not UTF-8"))?;
-        let id = registry.id(&name).ok_or(PersistError::UnknownBlock(name))?;
-        palette.push(id);
+        names.push(name);
+    }
+    Ok(names)
+}
+
+fn palette_names(mut bytes: &[u8]) -> Result<Vec<String>, PersistError> {
+    read_header(&mut bytes)
+}
+
+fn decode_chunks(
+    mut bytes: &[u8],
+    registry: &BlockRegistry,
+) -> Result<Vec<(ChunkPos, Chunk)>, PersistError> {
+    let r = &mut bytes;
+    let mut palette = Vec::new();
+    for name in read_header(r)? {
+        palette.push(registry.id(&name).ok_or(PersistError::UnknownBlock(name))?);
     }
     let count = read_u32(r)? as usize;
     let mut chunks = Vec::with_capacity(count.min(r.len() / (CHUNK_VOLUME * 2)));
@@ -212,6 +240,42 @@ mod tests {
         assert_eq!(*pos, p.chunk());
         assert_eq!(chunk.get(p.local()), stone);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn missing_content_survives_a_lenient_round_trip() {
+        let reg = test_registry();
+        let mut w = flat_world(1);
+        let p = BlockPos::new(2, 2, 2);
+        w.set_block(p, reg.id("core:stone").unwrap()).unwrap();
+        let bytes = encode_chunks(&w, &reg);
+        let dir = std::env::temp_dir().join(format!("rbvg_missing_test_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(CHUNKS_FILE), &bytes).unwrap();
+        // "Mod removed": the new registry only knows air.
+        let mut bare = crate::BlockRegistry::default();
+        let chunks = load_chunks_lenient(&dir, &mut bare).unwrap();
+        let id = chunk_block(&chunks, p);
+        assert_eq!(bare.name(id), "core:stone");
+        assert!(bare.is_solid(id));
+        let mut restored = flat_world(1);
+        for (pos, chunk) in chunks {
+            restored.insert_saved(pos, chunk);
+        }
+        save_world(&dir, &restored, &bare, None).unwrap();
+        let mut fresh = crate::BlockRegistry::default();
+        let reloaded = load_chunks_lenient(&dir, &mut fresh).unwrap();
+        assert_eq!(fresh.name(chunk_block(&reloaded, p)), "core:stone");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn chunk_block(chunks: &[(ChunkPos, Chunk)], p: BlockPos) -> BlockId {
+        chunks
+            .iter()
+            .find(|(c, _)| *c == p.chunk())
+            .unwrap()
+            .1
+            .get(p.local())
     }
 
     #[test]

@@ -6,7 +6,7 @@ use rbvg_voxel::streaming::LatencyStats;
 
 use crate::interaction::{Hotbar, Target};
 use crate::player::Player;
-use crate::scripting::ScriptStats;
+use crate::scripting::{Notification, ScriptStats};
 use crate::voxel::{Blocks, ChunkRender, GameWorld, Pipeline};
 
 #[derive(Component)]
@@ -15,12 +15,18 @@ struct DebugText;
 #[derive(Component)]
 struct HotbarText;
 
+/// Script notification line; hidden when the timer runs out.
+#[derive(Component)]
+struct NoticeText(Timer);
+
+const NOTICE_SECONDS: f32 = 4.0;
+
 pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_hud)
-            .add_systems(Update, (update_debug, update_hotbar));
+            .add_systems(Update, (update_debug, update_hotbar, update_notice));
     }
 }
 
@@ -44,6 +50,17 @@ fn spawn_hud(mut commands: Commands) {
             position_type: PositionType::Absolute,
             left: px(8),
             top: px(8),
+            ..default()
+        },
+    ));
+    commands.spawn((
+        NoticeText(Timer::from_seconds(0.0, TimerMode::Once)),
+        Text::default(),
+        TextFont::from_font_size(22.0),
+        Node {
+            position_type: PositionType::Absolute,
+            left: percent(50),
+            top: px(60),
             ..default()
         },
     ));
@@ -120,7 +137,7 @@ fn update_debug(
          ms avg/p95/max: gen {}  mesh {}  apply {}\n\
          script dispatch {:.3} ms  scheduler {:.3} ms ({} pending)  script errors {}\n\
          target {target}\n\
-         [click] capture mouse  [Esc] release  [F5] save  [F9] load",
+         [click] capture mouse  [Esc] release  [E] interact  [F5] save  [F9] load",
         pos.x,
         pos.y,
         pos.z,
@@ -168,4 +185,18 @@ fn update_hotbar(
         })
         .collect::<Vec<_>>()
         .join(" ");
+}
+
+fn update_notice(
+    time: Res<Time>,
+    mut notes: MessageReader<Notification>,
+    mut notice: Single<(&mut NoticeText, &mut Text)>,
+) {
+    let (timer, text) = &mut *notice;
+    if let Some(n) = notes.read().last() {
+        text.0 = n.0.clone();
+        timer.0 = Timer::from_seconds(NOTICE_SECONDS, TimerMode::Once);
+    } else if !timer.0.is_finished() && timer.0.tick(time.delta()).just_finished() {
+        text.0.clear();
+    }
 }

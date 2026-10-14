@@ -97,7 +97,10 @@ impl Game {
         };
         let (cmds, stats) = self.scripts.tick(Duration::from_secs_f64(secs), &query);
         assert_eq!(stats.errors, 0);
-        for ScriptCommand::SetBlock { pos, block, .. } in &cmds {
+        for cmd in &cmds {
+            let ScriptCommand::SetBlock { pos, block, .. } = cmd else {
+                panic!("unexpected command {cmd:?}");
+            };
             let id = self.registry.id(block).unwrap();
             self.world.set_block(*pos, id).unwrap();
         }

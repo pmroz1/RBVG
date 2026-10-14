@@ -1,0 +1,11 @@
+format_version = 1
+
+[[blocks]]
+id = "ancient_shrine:altar"
+display_name = "Ancient Altar"
+color = [0.45, 0.2, 0.7]
+
+[[blocks]]
+id = "ancient_shrine:glowstone"
+display_name = "Shrine Glow"
+color = [0.95, 0.85, 0.4]

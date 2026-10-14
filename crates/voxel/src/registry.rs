@@ -52,6 +52,8 @@ struct BlockFile {
 pub enum RegistryError {
     #[error("invalid namespaced id `{0}` (expected `namespace:name` using [a-z0-9_])")]
     InvalidId(String),
+    #[error("block id `{0}` exceeds the save format's 65535-byte limit")]
+    IdTooLong(String),
     #[error("duplicate block id `{0}`")]
     Duplicate(String),
     #[error("`{AIR_NAME}` is built in and cannot be redefined")]
@@ -116,6 +118,9 @@ impl Default for BlockRegistry {
 impl BlockRegistry {
     /// Registers a definition, validating its id. Returns the assigned runtime id.
     pub fn register(&mut self, def: BlockDef) -> Result<BlockId, RegistryError> {
+        if def.id.len() > usize::from(u16::MAX) {
+            return Err(RegistryError::IdTooLong(def.id));
+        }
         parse_namespaced(&def.id)?;
         if def.id == AIR_NAME {
             return Err(RegistryError::AirRedefined);
@@ -134,11 +139,13 @@ impl BlockRegistry {
 
     /// Parses a TOML block file and registers every block. Every id must belong to
     /// `namespace`, so one content pack cannot silently define another's blocks.
+    /// The registry is unchanged if any definition fails validation.
     pub fn load_toml(&mut self, namespace: &str, src: &str) -> Result<(), RegistryError> {
         let file: BlockFile = toml::from_str(src)?;
         if file.format_version != BLOCK_FORMAT_VERSION {
             return Err(RegistryError::UnsupportedVersion(file.format_version));
         }
+        let mut staged = self.clone();
         for def in file.blocks {
             let ns = parse_namespaced(&def.id)?;
             if ns != namespace {
@@ -148,9 +155,25 @@ impl BlockRegistry {
                     id: def.id,
                 });
             }
-            self.register(def)?;
+            staged.register(def)?;
         }
+        *self = staged;
         Ok(())
+    }
+
+    /// Registers a solid, magenta stand-in for content that a save references but no
+    /// installed mod provides, so the block survives load/save round trips instead of
+    /// being replaced by air. Returns the existing id if `name` is already registered.
+    pub fn register_missing(&mut self, name: &str) -> Result<BlockId, RegistryError> {
+        if let Some(id) = self.id(name) {
+            return Ok(id);
+        }
+        self.register(BlockDef {
+            id: name.to_owned(),
+            display_name: format!("Missing: {name}"),
+            solid: true,
+            color: [1.0, 0.0, 1.0],
+        })
     }
 
     pub fn id(&self, name: &str) -> Option<BlockId> {
@@ -258,5 +281,41 @@ pub(crate) mod tests {
             r.load_toml("core", &v2),
             Err(RegistryError::UnsupportedVersion(2))
         ));
+    }
+
+    #[test]
+    fn block_ids_fit_the_save_format() {
+        let mut r = BlockRegistry::default();
+        let name = format!("mod:{}", "a".repeat(usize::from(u16::MAX) - 4));
+        let id = r.register_missing(&name).unwrap();
+        assert_eq!(r.name(id), name);
+        let too_long = format!("{name}a");
+        assert!(matches!(
+            r.register_missing(&too_long),
+            Err(RegistryError::IdTooLong(_))
+        ));
+        assert_eq!(r.len(), 2);
+        assert!(r.id(&too_long).is_none());
+    }
+
+    #[test]
+    fn block_files_register_atomically() {
+        for second in [
+            SRC.to_owned(),
+            SRC.replace("core:stone", "other:stone"),
+            SRC.replace("core:stone", "core:bad").replace("0.5", "2.0"),
+        ] {
+            let mut r = test_registry();
+            let before = r.len();
+            let src = format!(
+                "{}\n{}",
+                SRC.replace("core:stone", "core:new"),
+                second.replace("format_version = 1", "")
+            );
+            assert!(r.load_toml("core", &src).is_err());
+            assert_eq!(r.len(), before);
+            assert!(r.id("core:new").is_none());
+            assert_eq!(r.id("core:stone"), Some(BlockId(3)));
+        }
     }
 }
