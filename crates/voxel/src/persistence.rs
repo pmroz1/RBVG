@@ -144,10 +144,9 @@ fn decode_chunks(
         read(r, &mut len)?;
         let mut name = vec![0u8; usize::from(u16::from_le_bytes(len))];
         read(r, &mut name)?;
-        let name = String::from_utf8(name).map_err(|_| PersistError::Corrupt("palette not UTF-8"))?;
-        let id = registry
-            .id(&name)
-            .ok_or(PersistError::UnknownBlock(name))?;
+        let name =
+            String::from_utf8(name).map_err(|_| PersistError::Corrupt("palette not UTF-8"))?;
+        let id = registry.id(&name).ok_or(PersistError::UnknownBlock(name))?;
         palette.push(id);
     }
     let count = read_u32(r)? as usize;

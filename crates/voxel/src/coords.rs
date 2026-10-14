@@ -62,7 +62,11 @@ impl BlockPos {
 
     /// Block containing the given world-space point.
     pub fn containing(p: [f32; 3]) -> Self {
-        Self::new(p[0].floor() as i32, p[1].floor() as i32, p[2].floor() as i32)
+        Self::new(
+            p[0].floor() as i32,
+            p[1].floor() as i32,
+            p[2].floor() as i32,
+        )
     }
 }
 
@@ -73,7 +77,11 @@ impl ChunkPos {
 
     /// World position of this chunk's minimum corner block.
     pub const fn origin(self) -> BlockPos {
-        BlockPos::new(self.x * CHUNK_SIZE, self.y * CHUNK_SIZE, self.z * CHUNK_SIZE)
+        BlockPos::new(
+            self.x * CHUNK_SIZE,
+            self.y * CHUNK_SIZE,
+            self.z * CHUNK_SIZE,
+        )
     }
 
     pub const fn offset(self, dx: i32, dy: i32, dz: i32) -> Self {
@@ -122,6 +130,9 @@ mod tests {
 
     #[test]
     fn containing_floors_negative_points() {
-        assert_eq!(BlockPos::containing([-0.1, 0.0, 2.9]), BlockPos::new(-1, 0, 2));
+        assert_eq!(
+            BlockPos::containing([-0.1, 0.0, 2.9]),
+            BlockPos::new(-1, 0, 2)
+        );
     }
 }

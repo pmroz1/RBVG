@@ -9,9 +9,9 @@ use rbvg_voxel::BlockPos;
 use rbvg_voxel::registry::parse_namespaced;
 use thiserror::Error;
 
+use crate::API_VERSION;
 use crate::events::{ScriptCommand, ScriptEvent};
 use crate::manifest::{Capability, ModManifest};
-use crate::API_VERSION;
 
 const HANDLERS_KEY: &str = "rbvg_handlers";
 
@@ -106,7 +106,11 @@ impl ScriptHost {
     }
 
     /// Creates an isolated VM for the mod and runs its entry script (within budget).
-    pub fn load_mod_source(&mut self, manifest: &ModManifest, src: &str) -> Result<(), ScriptError> {
+    pub fn load_mod_source(
+        &mut self,
+        manifest: &ModManifest,
+        src: &str,
+    ) -> Result<(), ScriptError> {
         let err = |source| ScriptError::Lua {
             mod_id: manifest.id.clone(),
             source,
@@ -114,7 +118,9 @@ impl ScriptHost {
         let instance = create_instance(manifest, &self.config).map_err(err)?;
         let chunk_name = format!("@{}/{}", manifest.id, manifest.entry.display());
         instance
-            .run(self.config.budget, |lua| lua.load(src).set_name(chunk_name).exec())
+            .run(self.config.budget, |lua| {
+                lua.load(src).set_name(chunk_name).exec()
+            })
             .map_err(err)?;
         let dropped = std::mem::take(&mut *lock(&instance.commands)).len();
         if dropped > 0 {
@@ -408,9 +414,15 @@ mod tests {
         )
         .unwrap();
         let err = host
-            .load_mod_source(&manifest("typo", vec![]), r#"events.subscribe("blok_broken", print)"#)
+            .load_mod_source(
+                &manifest("typo", vec![]),
+                r#"events.subscribe("blok_broken", print)"#,
+            )
             .unwrap_err();
         assert!(err.to_string().contains("unknown event"), "{err}");
-        assert!(err.to_string().contains("typo/main.luau:1"), "line info: {err}");
+        assert!(
+            err.to_string().contains("typo/main.luau:1"),
+            "line info: {err}"
+        );
     }
 }

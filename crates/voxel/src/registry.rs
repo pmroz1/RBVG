@@ -56,7 +56,9 @@ pub enum RegistryError {
     Duplicate(String),
     #[error("`{AIR_NAME}` is built in and cannot be redefined")]
     AirRedefined,
-    #[error("block `{id}` is in namespace `{found}`, but this source may only define `{expected}:*`")]
+    #[error(
+        "block `{id}` is in namespace `{found}`, but this source may only define `{expected}:*`"
+    )]
     WrongNamespace {
         id: String,
         found: String,

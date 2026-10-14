@@ -78,7 +78,12 @@ const FACES: [Face; 6] = [
 /// Rebuilds `out` for the chunk at `pos`, emitting only faces adjacent to non-solid
 /// blocks (including across chunk borders). `out` is cleared first so callers can reuse
 /// its allocations. Unloaded neighbours count as air.
-pub fn mesh_chunk(world: &VoxelWorld, registry: &BlockRegistry, pos: ChunkPos, out: &mut ChunkMesh) {
+pub fn mesh_chunk(
+    world: &VoxelWorld,
+    registry: &BlockRegistry,
+    pos: ChunkPos,
+    out: &mut ChunkMesh,
+) {
     out.clear();
     let Some(chunk) = world.chunk(pos) else {
         return;
@@ -94,7 +99,10 @@ pub fn mesh_chunk(world: &VoxelWorld, registry: &BlockRegistry, pos: ChunkPos, o
                 }
                 for face in &FACES {
                     let (nx, ny, nz) = (x + face.dir.0, y + face.dir.1, z + face.dir.2);
-                    let neighbour = if (0..n).contains(&nx) && (0..n).contains(&ny) && (0..n).contains(&nz) {
+                    let neighbour = if (0..n).contains(&nx)
+                        && (0..n).contains(&ny)
+                        && (0..n).contains(&nz)
+                    {
                         chunk.get(LocalPos::new(nx as u8, ny as u8, nz as u8))
                     } else {
                         world.get_block(BlockPos::new(origin.x + nx, origin.y + ny, origin.z + nz))
@@ -109,8 +117,14 @@ pub fn mesh_chunk(world: &VoxelWorld, registry: &BlockRegistry, pos: ChunkPos, o
                         out.normals.push(face.normal);
                         out.blocks.push(id);
                     }
-                    out.indices
-                        .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+                    out.indices.extend_from_slice(&[
+                        base,
+                        base + 1,
+                        base + 2,
+                        base,
+                        base + 2,
+                        base + 3,
+                    ]);
                 }
             }
         }

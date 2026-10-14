@@ -50,14 +50,17 @@ impl TerrainGenerator {
     }
 
     fn has_tree(&self, x: i32, z: i32) -> bool {
-        // Cheap integer hash; ~1 in 64 columns, never on adjacent columns of the same row.
-        let mut h = (x as u32).wrapping_mul(0x9E37_79B9)
-            ^ (z as u32).wrapping_mul(0x85EB_CA6B)
-            ^ self.seed.wrapping_mul(0xC2B2_AE35);
-        h ^= h >> 15;
-        h = h.wrapping_mul(0x2C1B_3C6D);
-        h ^= h >> 12;
-        h % 64 == 0
+        // Combine, then avalanche (murmur3 finaliser) so trees show no grid pattern.
+        let mut h = (x as u32)
+            .wrapping_mul(0x9E37_79B9)
+            .wrapping_add((z as u32).wrapping_mul(0x85EB_CA6B))
+            .wrapping_add(self.seed);
+        h ^= h >> 16;
+        h = h.wrapping_mul(0x85EB_CA6B);
+        h ^= h >> 13;
+        h = h.wrapping_mul(0xC2B2_AE35);
+        h ^= h >> 16;
+        h.is_multiple_of(97)
     }
 
     /// Block at a world position, computed from a precomputed column height.

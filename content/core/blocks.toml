@@ -1,0 +1,23 @@
+# Core block definitions. `core:air` is built into the engine and must not be listed.
+# Colours are sRGB placeholders until a texture pipeline exists.
+format_version = 1
+
+[[blocks]]
+id = "core:grass"
+display_name = "Grass"
+color = [0.36, 0.62, 0.24]
+
+[[blocks]]
+id = "core:dirt"
+display_name = "Dirt"
+color = [0.47, 0.33, 0.22]
+
+[[blocks]]
+id = "core:stone"
+display_name = "Stone"
+color = [0.52, 0.52, 0.54]
+
+[[blocks]]
+id = "core:wood"
+display_name = "Wood"
+color = [0.55, 0.38, 0.2]
