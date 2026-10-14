@@ -1,5 +1,9 @@
 # Scripting API (v1)
 
+Phase 2 additions (`world.read`, `world.get_block`, `world.is_loaded`, `scheduler.*`) are
+additive, so `API_VERSION` stays 1. `world.set_block` now uses the same explicit
+coordinate validation as the read functions (finite integers in the 32-bit range).
+
 Mods are written in [Luau](https://luau.org). API version: **1**
 (`rbvg_scripting::API_VERSION`). Breaking changes bump the version; mods declaring a
 different `api_version` are rejected at load time with a clear error.
@@ -21,6 +25,11 @@ entry = "main.luau"       # relative .luau path inside the mod directory
 capabilities = ["world.write"]   # optional; privileges must be requested explicitly
 ```
 
+| Capability | Grants |
+|---|---|
+| `world.write` | `world.set_block` |
+| `world.read` | `world.get_block`, `world.is_loaded` |
+
 Mods are discovered in `mods/*/mod.toml` and loaded in id order. A mod that fails to load
 is reported and skipped; the game still starts. Unknown manifest keys or capabilities are
 errors.
@@ -29,13 +38,15 @@ errors.
 
 - The entry script runs once at load time. It should register event handlers; world
   commands issued during load are ignored (with a warning).
-- Handlers run only when the engine dispatches an event. There is no per-frame script
-  callback.
+- Handlers run only when the engine dispatches an event or a scheduled callback becomes
+  due. There is no per-frame script callback.
 - Every mod has its own Luau VM: globals, state and errors never leak between mods.
 - Script globals are per-mod; the standard library and engine API tables are read-only.
-- **Budgets:** loading and each event dispatch get 5 ms of wall-clock time per mod; a VM
-  may use 16 MiB of heap; a handler may queue 256 commands per event. Exceeding a limit
-  raises a Luau error in that handler.
+- **Budgets:** loading and each event dispatch get 5 ms of wall-clock time per mod; all
+  scheduled callbacks of one mod in one scheduler tick share 5 ms; a VM may use 16 MiB of
+  heap; a handler or callback may queue 256 commands. Exceeding a limit raises a Luau
+  error in that handler/callback. A mod may have at most 256 pending scheduled callbacks;
+  at most 64 callbacks run per tick across all mods.
 - **Errors:** a failing handler is logged as `mod_id` + `@<mod_id>/<file>:<line>: message`
   and skipped. Other handlers and mods still run. The game never crashes due to a script.
 
@@ -44,8 +55,23 @@ errors.
 `world.*` mutation functions do not change the world directly; they queue commands.
 After all mods have handled an event, the engine validates each command (block id
 registered, chunk loaded) and applies it, in the same frame, in mod load order. Invalid
-commands are logged and dropped. Changes made by scripts do **not** raise further
-script events, which prevents feedback loops.
+commands are logged and dropped (a solid block is also refused where it would overlap
+the player). Scheduled callbacks follow the same rule: their commands are applied after
+the scheduler tick that ran them.
+
+Changes made by scripts do **not** raise further script events, which prevents feedback
+loops. *Limitation:* mods cannot observe each other's edits through events, and a future
+RPG event system will need explicit, budgeted script-originated events (with a cause /
+depth field) instead of this blanket rule.
+
+### World reads: consistency
+
+`world.get_block` / `world.is_loaded` read the engine's live world through a read-only
+view that exists only while the engine runs a handler or callback. Within one event
+dispatch (or one scheduler tick) every script sees the same state: commands queued by
+any script — including the caller — are **not** visible until the engine applies them
+after the dispatch/tick. Reads never generate or load chunks. Outside handlers/callbacks
+(e.g. at load time) the read functions raise an error.
 
 ## Globals
 
@@ -68,9 +94,44 @@ Subscribing to an unknown event name is an error (catches typos).
 
 ### `world`
 
-`world.set_block(position, block_id)` — queue a block change. `position` is
-`{ x = int, y = int, z = int }`; `block_id` is a namespaced id such as `"core:stone"` or
-`"core:air"`. Requires the `world.write` capability.
+Positions are either a table `{ x = int, y = int, z = int }` or three numbers `x, y, z`.
+Every coordinate must be a finite integer within the 32-bit range; anything else
+(fractions, NaN, ±inf, strings, missing fields) raises an error.
+
+| Function | Capability | Result |
+|---|---|---|
+| `world.set_block(position, block_id)` | `world.write` | Queues a block change. `block_id` is namespaced, e.g. `"core:stone"`, `"core:air"`. Position accepts the table form. |
+| `world.get_block(position)` | `world.read` | The namespaced id at `position`, or **`nil` if its chunk is not loaded**. |
+| `world.is_loaded(position)` | `world.read` | `true` if the chunk containing `position` is loaded. |
+
+### `scheduler`
+
+Delays are **simulation time** (Bevy virtual time): when the game is paused, time does not
+advance and nothing fires; nothing catches up faster than the simulation runs.
+
+| Function | Description |
+|---|---|
+| `scheduler.after(seconds, fn) -> handle` | Run `fn()` once, `seconds` (≥ 0) from now. |
+| `scheduler.every(seconds, fn) -> handle` | Run `fn()` every `seconds` (≥ 0.05). Stops if `fn` errors. |
+| `scheduler.cancel(handle) -> boolean` | Cancel a pending callback; `false` if it already ran or was unknown. |
+
+Rules:
+
+- `seconds` must be a finite number; negative, NaN, infinite or too-small repeat intervals
+  are errors. A mod with 256 pending callbacks gets an error from `after`/`every`.
+- Callbacks run on the engine's scripting step after event dispatch, each frame, through
+  the same protected path as handlers (budget, memory, command cap, error logging).
+- A zero-delay callback, and any callback scheduled from inside a callback, runs on the
+  **next** scheduler tick at the earliest — never in the tick that scheduled it.
+- Callbacks may schedule further callbacks and may read the world and queue commands.
+- Order: by deadline, then by scheduling order (deterministic, across all mods).
+- If the per-tick cap (64) or a mod's per-tick budget is exhausted, remaining due callbacks
+  stay queued, in order, for the next tick. A callback that exceeds the budget errors.
+- A failing callback is logged and released; other callbacks and mods keep running.
+- A `scheduler.every` callback whose tick fell behind is not run repeatedly to catch up;
+  its next deadline is never earlier than "now".
+- **Lifecycle:** callbacks are in memory only. They are dropped when their mod is unloaded,
+  when the world is reloaded (F9), and on application exit. Closures are never saved.
 
 ## Events
 
@@ -93,7 +154,27 @@ cannot be cancelled or modified. Cancellable `before_*` events are planned for P
 
 ## Example
 
-See [`mods/example_logger/main.luau`](../mods/example_logger/main.luau):
+[`mods/regrowth/main.luau`](../mods/regrowth/main.luau) combines events, reads, the
+scheduler and validated writes: a broken block grows back after 3 s of simulation time,
+but only if its chunk is still loaded and the spot is still empty (a block the player
+placed there meanwhile is never overwritten).
+
+```lua
+events.subscribe("block_broken", function(e)
+	local p = e.position
+	local block = e.block
+	scheduler.after(3.0, function()
+		if not world.is_loaded(p) then
+			return
+		end
+		if world.get_block(p) == "core:air" then
+			world.set_block(p, block)
+		end
+	end)
+end)
+```
+
+See also [`mods/example_logger/main.luau`](../mods/example_logger/main.luau):
 
 ```lua
 local broken = 0
@@ -110,8 +191,8 @@ end)
 
 ## Planned API (not implemented)
 
-Target shapes for later phases: `world.get_block(pos)`, `world.spawn_entity(id, pos)`,
+Target shapes for later phases: `world.spawn_entity(id, pos)`,
 `entities.get_component(handle, type)`, `entities.apply_damage(handle, amount)`,
 `player.give_item(item, n)`, `player.get_stat(name)`, `quests.start(player, quest)`,
-`dialogue.open(player, dialogue)`, `scheduler.after(seconds, fn)`, custom mod events,
+`dialogue.open(player, dialogue)`, custom mod events,
 mod-scoped persistent storage. Entity access will use validated generational handles.

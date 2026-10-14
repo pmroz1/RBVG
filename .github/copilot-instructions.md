@@ -20,7 +20,12 @@ into a platform. Keep that vision in every change.
   stable and must never be persisted; persist names (see the palette in `persistence.rs`).
 - Use `div_euclid`/`rem_euclid` for world↔chunk conversions (negative coordinates).
 - World generators implement `WorldGenerator` and stay deterministic per seed.
-- World edits go through `VoxelWorld::set_block` so dirty tracking and events stay correct.
+- World edits go through `VoxelWorld::set_block` so dirty tracking, revisions and events
+  stay correct.
+- Chunk streaming/meshing decisions live in `rbvg_voxel::streaming::ChunkPipeline`; the client
+  only runs its jobs on `AsyncComputeTaskPool`. Jobs take owned inputs; validate every
+  async result against tickets and chunk revisions before applying. Never block on a task
+  in a frame system.
 - Keep rendering out of gameplay logic; the client only translates data to Bevy.
 
 ## Scripting rules
@@ -35,6 +40,9 @@ into a platform. Keep that vision in every change.
 - Update `docs/SCRIPTING_API.md` and bump `API_VERSION` for breaking changes. State whether
   each event is cancellable.
 - Do not run script code per voxel or per frame without a clear budget.
+- World reads go through the scoped `WorldQuery` (`world.read` capability); never hand
+  scripts mutable or long-lived world access. Scheduled callbacks run via `ScriptHost::tick`
+  in simulation time and are never persisted.
 
 ## Quality bar
 
