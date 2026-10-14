@@ -11,6 +11,7 @@ pub mod persistence;
 pub mod physics;
 pub mod raycast;
 pub mod registry;
+pub mod streaming;
 pub mod world;
 
 pub use chunk::Chunk;

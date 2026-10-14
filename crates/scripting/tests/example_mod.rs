@@ -2,7 +2,9 @@
 
 use std::path::Path;
 
-use rbvg_scripting::{ModManifest, ScriptCommand, ScriptEvent, ScriptHost, ScriptHostConfig};
+use rbvg_scripting::{
+    ModManifest, NoWorld, ScriptCommand, ScriptEvent, ScriptHost, ScriptHostConfig,
+};
 use rbvg_voxel::BlockPos;
 
 #[test]
@@ -22,7 +24,7 @@ fn example_logger_restores_every_tenth_block() {
             pos: BlockPos::new(i, -4, 2),
             block: "core:dirt".into(),
         };
-        let (mut cmds, stats) = host.dispatch(&event);
+        let (mut cmds, stats) = host.dispatch(&event, &NoWorld);
         assert_eq!(stats.errors, 0);
         commands.append(&mut cmds);
     }

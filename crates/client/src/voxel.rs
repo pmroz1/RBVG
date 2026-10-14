@@ -1,25 +1,42 @@
 //! Chunk streaming around the player and mesh upload.
+//!
+//! Generation and meshing run on Bevy's `AsyncComputeTaskPool`. Jobs own immutable
+//! inputs (generator handle, chunk snapshot) produced by the Bevy-free
+//! [`ChunkPipeline`]; finished tasks are polled without blocking and their results are
+//! validated by the pipeline on the main thread before touching the world or the ECS.
+//! Dropping a task handle cancels work that has not started yet.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Instant;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
-use rbvg_voxel::meshing::{ChunkMesh, mesh_chunk};
+use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
+use rbvg_voxel::meshing::ChunkMesh;
+use rbvg_voxel::streaming::{ChunkPipeline, GenResult, MeshResult, StreamConfig, Ticket};
 use rbvg_voxel::{BlockId, BlockPos, BlockRegistry, ChunkPos, VoxelWorld};
 
 use crate::player::Player;
 
-/// Horizontal chunk radius kept loaded around the player.
-const LOAD_RADIUS: i32 = 6;
-/// Vertical chunk radius kept loaded around the player.
-const LOAD_RADIUS_Y: i32 = 2;
-const MAX_LOADS_PER_FRAME: usize = 8;
-const MAX_MESHES_PER_FRAME: usize = 12;
-
 #[derive(Resource)]
-pub struct Blocks(pub BlockRegistry);
+pub struct Blocks(pub Arc<BlockRegistry>);
+
+/// Streaming scheduler and its statistics.
+#[derive(Resource)]
+pub struct Pipeline(pub ChunkPipeline);
+
+/// Marks rendered chunk entities (used to count visible chunks).
+#[derive(Component)]
+pub struct ChunkRender;
+
+/// In-flight background tasks, keyed by the pipeline ticket that owns them.
+#[derive(Resource, Default)]
+struct GenTasks(Vec<(ChunkPos, Ticket, Task<GenResult>)>);
+
+#[derive(Resource, Default)]
+struct MeshTasks(Vec<(ChunkPos, Ticket, Task<MeshResult>)>);
 
 #[derive(Resource)]
 pub struct GameWorld(pub VoxelWorld);
@@ -35,25 +52,18 @@ struct ChunkMaterial(Handle<StandardMaterial>);
 #[derive(Resource, Default)]
 pub struct ChunkEntities(pub HashMap<ChunkPos, Entity>);
 
-/// Timings for the debug overlay.
-#[derive(Resource, Default)]
-pub struct VoxelStats {
-    pub last_generation: Duration,
-    pub last_meshing: Duration,
-    pub meshed_last_frame: usize,
-    pub pending_loads: usize,
-}
-
 /// Renders and streams the world. Expects [`Blocks`] and [`GameWorld`] to be inserted.
 pub struct VoxelPlugin;
 
 impl Plugin for VoxelPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ChunkEntities>()
-            .init_resource::<VoxelStats>()
+            .init_resource::<GenTasks>()
+            .init_resource::<MeshTasks>()
+            .insert_resource(Pipeline(ChunkPipeline::new(StreamConfig::default())))
             .insert_resource(ClearColor(Color::srgb(0.53, 0.74, 0.92)))
             .add_systems(Startup, setup_scene)
-            .add_systems(Update, (stream_chunks, mesh_dirty_chunks).chain());
+            .add_systems(Update, (stream_chunks, mesh_chunks).chain());
     }
 }
 
@@ -94,94 +104,90 @@ pub fn chunk_at(p: Vec3) -> ChunkPos {
     BlockPos::containing(p.to_array()).chunk()
 }
 
-fn stream_chunks(
-    mut commands: Commands,
-    mut world: ResMut<GameWorld>,
-    mut entities: ResMut<ChunkEntities>,
-    mut stats: ResMut<VoxelStats>,
-    player: Single<&Transform, With<Player>>,
-) {
-    let center = chunk_at(player.translation);
-    let in_range = |p: ChunkPos| {
-        (p.x - center.x).abs() <= LOAD_RADIUS
-            && (p.z - center.z).abs() <= LOAD_RADIUS
-            && (p.y - center.y).abs() <= LOAD_RADIUS_Y
-    };
-
-    // Unload with one chunk of hysteresis so walking along a border does not thrash.
-    let far: Vec<ChunkPos> = world
-        .0
-        .loaded_positions()
-        .filter(|p| {
-            (p.x - center.x).abs() > LOAD_RADIUS + 1
-                || (p.z - center.z).abs() > LOAD_RADIUS + 1
-                || (p.y - center.y).abs() > LOAD_RADIUS_Y + 1
-        })
-        .collect();
-    for p in far {
-        world.0.unload_chunk(p);
-        if let Some(e) = entities.0.remove(&p) {
-            commands.entity(e).despawn();
+/// Takes the results of finished tasks, at most `max`, without blocking.
+fn take_finished<T>(tasks: &mut Vec<(ChunkPos, Ticket, Task<T>)>, max: usize) -> Vec<T> {
+    let mut done = Vec::new();
+    let mut i = 0;
+    while i < tasks.len() && done.len() < max {
+        if tasks[i].2.is_finished() {
+            // Finished, so `block_on` returns immediately.
+            done.push(block_on(tasks.swap_remove(i).2));
+        } else {
+            i += 1;
         }
     }
-
-    let mut missing = Vec::new();
-    for y in -LOAD_RADIUS_Y..=LOAD_RADIUS_Y {
-        for z in -LOAD_RADIUS..=LOAD_RADIUS {
-            for x in -LOAD_RADIUS..=LOAD_RADIUS {
-                let p = center.offset(x, y, z);
-                if in_range(p) && !world.0.is_loaded(p) {
-                    missing.push(p);
-                }
-            }
-        }
-    }
-    missing.sort_unstable_by_key(|p| {
-        let (dx, dy, dz) = (p.x - center.x, p.y - center.y, p.z - center.z);
-        dx * dx + dy * dy + dz * dz
-    });
-    stats.pending_loads = missing.len();
-    if missing.is_empty() {
-        return;
-    }
-    // shortcut: generation runs on the main thread with a per-frame cap; move to
-    // AsyncComputeTaskPool when view distance grows.
-    let start = Instant::now();
-    for p in missing.into_iter().take(MAX_LOADS_PER_FRAME) {
-        world.0.load_chunk(p);
-    }
-    stats.last_generation = start.elapsed();
+    done
 }
 
-fn mesh_dirty_chunks(
+fn stream_chunks(
+    mut world: ResMut<GameWorld>,
+    mut pipeline: ResMut<Pipeline>,
+    mut tasks: ResMut<GenTasks>,
+    player: Single<&Transform, With<Player>>,
+) {
+    let start = Instant::now();
+    let finished = take_finished(&mut tasks.0, usize::MAX);
+    let applied = !finished.is_empty();
+    for result in finished {
+        pipeline.0.finish_generation(&mut world.0, result);
+    }
+    if applied {
+        pipeline.0.stats.apply.record(start.elapsed());
+    }
+    let pool = AsyncComputeTaskPool::get();
+    for job in pipeline
+        .0
+        .update(&mut world.0, chunk_at(player.translation))
+    {
+        let (pos, ticket) = (job.pos, job.ticket);
+        tasks
+            .0
+            .push((pos, ticket, pool.spawn(async move { job.run() })));
+    }
+    // Dropping a cancelled task stops it if it has not started; late results are
+    // rejected by ticket anyway.
+    let p = &pipeline.0;
+    tasks
+        .0
+        .retain(|(pos, t, _)| p.is_current_generation(*pos, *t));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mesh_chunks(
     mut commands: Commands,
     mut world: ResMut<GameWorld>,
+    mut pipeline: ResMut<Pipeline>,
+    mut tasks: ResMut<MeshTasks>,
     blocks: Res<Blocks>,
     colors: Res<BlockColors>,
     material: Res<ChunkMaterial>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut entities: ResMut<ChunkEntities>,
-    mut stats: ResMut<VoxelStats>,
-    mut buffer: Local<ChunkMesh>,
     player: Single<&Transform, With<Player>>,
 ) {
-    let dirty = world
-        .0
-        .take_dirty_nearest(chunk_at(player.translation), MAX_MESHES_PER_FRAME);
-    stats.meshed_last_frame = dirty.len();
-    if dirty.is_empty() {
-        return;
-    }
+    entities.0.retain(|pos, e| {
+        let keep = world.0.is_loaded(*pos);
+        if !keep {
+            commands.entity(*e).despawn();
+        }
+        keep
+    });
+
     let start = Instant::now();
-    for pos in dirty {
-        mesh_chunk(&world.0, &blocks.0, pos, &mut buffer);
-        if buffer.is_empty() {
+    let finished = take_finished(&mut tasks.0, pipeline.0.config.max_apply_per_tick);
+    let applied = !finished.is_empty();
+    for result in finished {
+        let pos = result.pos;
+        let Some(mesh) = pipeline.0.finish_meshing(&mut world.0, result) else {
+            continue;
+        };
+        if mesh.is_empty() {
             if let Some(e) = entities.0.remove(&pos) {
                 commands.entity(e).despawn();
             }
             continue;
         }
-        let handle = meshes.add(to_bevy_mesh(&buffer, &colors.0));
+        let handle = meshes.add(to_bevy_mesh(mesh, &colors.0));
         match entities.0.get(&pos) {
             Some(&e) => {
                 commands.entity(e).insert(Mesh3d(handle));
@@ -190,6 +196,7 @@ fn mesh_dirty_chunks(
                 let o = pos.origin();
                 let e = commands
                     .spawn((
+                        ChunkRender,
                         Mesh3d(handle),
                         MeshMaterial3d(material.0.clone()),
                         Transform::from_xyz(o.x as f32, o.y as f32, o.z as f32),
@@ -199,10 +206,23 @@ fn mesh_dirty_chunks(
             }
         }
     }
-    stats.last_meshing = start.elapsed();
+    if applied {
+        pipeline.0.stats.apply.record(start.elapsed());
+    }
+
+    let pool = AsyncComputeTaskPool::get();
+    let center = chunk_at(player.translation);
+    for job in pipeline.0.schedule_meshing(&mut world.0, &blocks.0, center) {
+        let (pos, ticket) = (job.pos, job.ticket);
+        tasks
+            .0
+            .push((pos, ticket, pool.spawn(async move { job.run() })));
+    }
+    let p = &pipeline.0;
+    tasks.0.retain(|(pos, t, _)| p.is_current_mesh(*pos, *t));
 }
 
-fn to_bevy_mesh(m: &ChunkMesh, colors: &[[f32; 4]]) -> Mesh {
+fn to_bevy_mesh(m: ChunkMesh, colors: &[[f32; 4]]) -> Mesh {
     let vertex_colors: Vec<[f32; 4]> = m
         .blocks
         .iter()
@@ -217,8 +237,8 @@ fn to_bevy_mesh(m: &ChunkMesh, colors: &[[f32; 4]]) -> Mesh {
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::RENDER_WORLD,
     )
-    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, m.positions.clone())
-    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, m.normals.clone())
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, m.positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, m.normals)
     .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vertex_colors)
-    .with_inserted_indices(Indices::U32(m.indices.clone()))
+    .with_inserted_indices(Indices::U32(m.indices))
 }

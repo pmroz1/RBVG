@@ -2,11 +2,12 @@
 
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
+use rbvg_voxel::streaming::LatencyStats;
 
 use crate::interaction::{Hotbar, Target};
 use crate::player::Player;
 use crate::scripting::ScriptStats;
-use crate::voxel::{Blocks, ChunkEntities, GameWorld, VoxelStats};
+use crate::voxel::{Blocks, ChunkRender, GameWorld, Pipeline};
 
 #[derive(Component)]
 struct DebugText;
@@ -59,11 +60,25 @@ fn spawn_hud(mut commands: Commands) {
     ));
 }
 
+/// `avg/p95/max` in milliseconds.
+fn latency(s: &LatencyStats) -> String {
+    let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+    format!(
+        "{:.2}/{:.2}/{:.2}",
+        ms(s.average()),
+        ms(s.percentile(0.95)),
+        ms(s.max())
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn update_debug(
     diagnostics: Res<DiagnosticsStore>,
+    time: Res<Time<Real>>,
+    mut frames: Local<LatencyStats>,
     world: Res<GameWorld>,
-    entities: Res<ChunkEntities>,
-    stats: Res<VoxelStats>,
+    chunks: Query<&ViewVisibility, With<ChunkRender>>,
+    pipeline: Res<Pipeline>,
     scripts: Res<ScriptStats>,
     target: Res<Target>,
     blocks: Res<Blocks>,
@@ -78,6 +93,9 @@ fn update_debug(
         .get(&FrameTimeDiagnosticsPlugin::FRAME_TIME)
         .and_then(|d| d.smoothed())
         .unwrap_or(0.0);
+    frames.record(time.delta());
+    let visible = chunks.iter().filter(|v| v.get()).count();
+    let s = &pipeline.0.stats;
     let (transform, p) = player.into_inner();
     let pos = Player::feet(transform.translation);
     let target = target.0.map_or_else(
@@ -95,23 +113,35 @@ fn update_debug(
     text.0 = format!(
         "FPS {fps:.0} ({frame_ms:.1} ms)\n\
          pos {:.1} {:.1} {:.1}{}\n\
-         chunks loaded {} / rendered {} / pending load {} / pending mesh {}\n\
-         gen {:.2} ms  mesh {:.2} ms ({} chunks)\n\
-         script dispatch {:.3} ms  script errors {}\n\
+         frame ms avg/p95/max {}\n\
+         chunks loaded {} / rendered {} / visible {}\n\
+         gen pending {} active {}  mesh pending {} active {}\n\
+         stale gen {} mesh {}  cancelled gen {}\n\
+         ms avg/p95/max: gen {}  mesh {}  apply {}\n\
+         script dispatch {:.3} ms  scheduler {:.3} ms ({} pending)  script errors {}\n\
          target {target}\n\
          [click] capture mouse  [Esc] release  [F5] save  [F9] load",
         pos.x,
         pos.y,
         pos.z,
         if p.on_ground { " (ground)" } else { "" },
+        latency(&frames),
         world.0.loaded_count(),
-        entities.0.len(),
-        stats.pending_loads,
-        world.0.dirty_count(),
-        stats.last_generation.as_secs_f64() * 1000.0,
-        stats.last_meshing.as_secs_f64() * 1000.0,
-        stats.meshed_last_frame,
+        chunks.iter().len(),
+        visible,
+        s.pending_generation,
+        s.active_generation,
+        s.pending_meshing,
+        s.active_meshing,
+        s.stale_generation,
+        s.stale_meshes,
+        s.cancelled_generation,
+        latency(&s.generation),
+        latency(&s.meshing),
+        latency(&s.apply),
         scripts.last_dispatch.as_secs_f64() * 1000.0,
+        scripts.last_tick.as_secs_f64() * 1000.0,
+        scripts.scheduled,
         scripts.errors,
     );
 }
