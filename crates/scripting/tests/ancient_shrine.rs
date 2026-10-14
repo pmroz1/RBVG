@@ -167,6 +167,39 @@ fn shrine_ritual_end_to_end() {
 }
 
 #[test]
+fn shrine_can_retry_after_the_scheduler_was_full() {
+    let (mut g, _) = setup(&["ancient_shrine"], &[]);
+    let manifest = ModManifest::load(&root().join("mods/ancient_shrine")).unwrap();
+    let mut host = ScriptHost::new(ScriptHostConfig {
+        max_scheduled_per_mod: 1,
+        ..ScriptHostConfig::default()
+    });
+    let src = std::fs::read_to_string(manifest.dir.join(&manifest.entry)).unwrap();
+    host.load_mod_source(
+        &manifest,
+        &format!("scheduler.after(1, function() end)\n{src}"),
+    )
+    .unwrap();
+    let pos = g.surface.offset(0, 1, 0);
+    g.world
+        .set_block(pos, g.registry.id("ancient_shrine:altar").unwrap())
+        .unwrap();
+    assert_eq!(interact(&mut g, &host, pos).errors, 1);
+    assert!(g.notes.is_empty());
+    tick(&mut g, &mut host, 1.0);
+    assert_eq!(host.scheduled_count(), 0);
+
+    assert_eq!(interact(&mut g, &host, pos).errors, 0);
+    assert_eq!(host.scheduled_count(), 1);
+    assert_eq!(g.notes, ["The ancient shrine awakens..."]);
+    tick(&mut g, &mut host, 3.0);
+    assert_eq!(
+        g.block(g.surface.offset(1, 0, 0)),
+        Some("ancient_shrine:glowstone")
+    );
+}
+
+#[test]
 fn engine_works_without_the_mod() {
     let (mut g, host) = setup(&[], &[]);
     assert!(g.registry.id("ancient_shrine:altar").is_none());

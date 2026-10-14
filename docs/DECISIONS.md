@@ -44,7 +44,7 @@ an authoritative server.
 freeze the frame. *Trade-off:* wall-clock is nondeterministic; a deterministic
 instruction-count budget may be preferable for lockstep/replay later.
 
-## D10 — Notification-only events in API v1
+## D10 — Notification-only events in API v1 (superseded by D21)
 *Why:* cancellation needs a defined "before" phase and ordering rules; deferring keeps v1
 honest. Planned as `before_*` events in Phase 3.
 
@@ -109,3 +109,9 @@ side implements `CommandApplier`, keeping the pump Bevy-free and testable headle
 Unknown palette names in a save register as solid "Missing" blocks so they round-trip
 instead of becoming air or blocking the load. Mods' block files are registered before the
 save is read.
+
+## D21 — Cancellable before-block-break events
+`before_block_break` runs before a player break and may call `e.cancel()`; cancellation
+is combined across handlers in deterministic mod order. Other events are notifications
+and cannot be cancelled. *Why:* mods can protect blocks without coupling gameplay to
+rendering. Commands remain queued and are applied after dispatch, even when cancelled.

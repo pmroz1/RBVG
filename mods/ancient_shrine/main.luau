@@ -18,8 +18,6 @@ events.subscribe("interact", function(e)
 		ui.notify("The ritual is already underway...")
 		return
 	end
-	active[key] = true
-	ui.notify("The ancient shrine awakens...")
 	scheduler.after(RITUAL_SECONDS, function()
 		active[key] = nil
 		-- Never force-load; the player may have walked away or the altar was removed.
@@ -38,4 +36,6 @@ events.subscribe("interact", function(e)
 		end
 		ui.notify("The shrine's light spreads.")
 	end)
+	active[key] = true
+	ui.notify("The ancient shrine awakens...")
 end)

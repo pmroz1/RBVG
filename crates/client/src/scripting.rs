@@ -43,6 +43,7 @@ pub struct Notification(pub String);
 #[derive(Message, Debug, Clone, Copy)]
 pub struct InteractRequest {
     pub pos: BlockPos,
+    pub block: BlockId,
 }
 
 pub struct ScriptingPlugin;
@@ -178,17 +179,14 @@ fn dispatch_player_events(
         }));
     }
     for i in interactions.read() {
-        // Unloaded chunks yield no event rather than being force-loaded.
-        if let Some(id) = world.0.block_if_loaded(i.pos) {
-            events.push(Envelope {
-                event: ScriptEvent::Interact {
-                    pos: i.pos,
-                    block: blocks.0.name(id).to_owned(),
-                },
-                origin: EventOrigin::Player,
-                depth: 0,
-            });
-        }
+        events.push(Envelope {
+            event: ScriptEvent::Interact {
+                pos: i.pos,
+                block: blocks.0.name(i.block).to_owned(),
+            },
+            origin: EventOrigin::Player,
+            depth: 0,
+        });
     }
     if events.is_empty() {
         return;

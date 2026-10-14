@@ -120,13 +120,18 @@ fn interact(
     keys: Res<ButtonInput<KeyCode>>,
     cursor: Single<Ref<CursorOptions>>,
     target: Res<Target>,
+    world: Res<GameWorld>,
     mut requests: MessageWriter<InteractRequest>,
 ) {
     if cursor_captured(&cursor)
         && keys.just_pressed(KeyCode::KeyE)
         && let Some(hit) = target.0
+        && let Some(block) = world.0.block_if_loaded(hit.block)
     {
-        requests.write(InteractRequest { pos: hit.block });
+        requests.write(InteractRequest {
+            pos: hit.block,
+            block,
+        });
     }
 }
 
@@ -212,5 +217,76 @@ fn draw_target(target: Res<Target>, mut gizmos: Gizmos) {
             Transform::from_translation(center).with_scale(Vec3::splat(1.005)),
             Color::BLACK,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{path::Path, sync::Arc};
+
+    use crate::scripting::ScriptingPlugin;
+    use rbvg_scripting::{ModManifest, ScriptHost, ScriptHostConfig};
+    use rbvg_voxel::{TerrainGenerator, VoxelWorld};
+
+    #[test]
+    fn interaction_keeps_the_target_block_after_a_same_frame_edit() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut registry = crate::load_content(&root).unwrap();
+        let manifest = ModManifest::load(&root.join("mods/ancient_shrine")).unwrap();
+        manifest.register_blocks(&mut registry).unwrap();
+        let mut host = ScriptHost::new(ScriptHostConfig::default());
+        host.load_mod_source(
+            &manifest,
+            r#"events.subscribe("interact", function(e) ui.notify(e.block) end)"#,
+        )
+        .unwrap();
+        let mut world = VoxelWorld::new(7, Arc::new(TerrainGenerator::new(7, &registry).unwrap()));
+        let pos = BlockPos::new(0, 64, 0);
+        world.load_chunk(pos.chunk());
+        world
+            .set_block(pos, registry.id("ancient_shrine:altar").unwrap())
+            .unwrap();
+        let mut keys = ButtonInput::default();
+        keys.press(KeyCode::KeyE);
+        let mut app = App::new();
+        app.insert_resource(GameWorld(world))
+            .insert_resource(Blocks(Arc::new(registry)))
+            .insert_resource(Scripts(host))
+            .insert_resource(keys)
+            .insert_resource(Time::<()>::default())
+            .insert_resource(Target(Some(RayHit {
+                block: pos,
+                normal: [0, 1, 0],
+                distance: 1.0,
+            })))
+            .add_message::<BlockChanged>()
+            .add_plugins(ScriptingPlugin)
+            .add_systems(
+                Update,
+                (interact, move |mut world: ResMut<GameWorld>| {
+                    world.0.set_block(pos, BlockId::AIR).unwrap();
+                })
+                    .chain()
+                    .in_set(InteractionSystems),
+            );
+        app.world_mut().spawn(CursorOptions {
+            grab_mode: bevy::window::CursorGrabMode::Locked,
+            ..default()
+        });
+        app.world_mut()
+            .spawn((Player::default(), Transform::default()));
+        app.update();
+        assert_eq!(
+            app.world().resource::<GameWorld>().0.get_block(pos),
+            BlockId::AIR
+        );
+        let notes: Vec<_> = app
+            .world_mut()
+            .resource_mut::<Messages<Notification>>()
+            .drain()
+            .map(|n| n.0)
+            .collect();
+        assert_eq!(notes, ["ancient_shrine:altar"]);
     }
 }

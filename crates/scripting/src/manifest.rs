@@ -182,7 +182,7 @@ impl ModManifest {
         self.capabilities.contains(&cap)
     }
 
-    /// Loads every `*/mod.toml` under `root`, sorted by id for a deterministic load order.
+    /// Loads every `*/mod.toml` under `root` in dependency order, smallest ready id first.
     /// A missing `root` yields no mods.
     pub fn discover(root: &Path) -> Result<Vec<Self>, ManifestError> {
         let io = |source| ManifestError::Io {
@@ -199,14 +199,6 @@ impl ModManifest {
                 mods.push(Self::load(&dir)?);
             }
         }
-        mods.sort_by(|a, b| a.id.cmp(&b.id));
-        if let Some(w) = mods.windows(2).find(|w| w[0].id == w[1].id) {
-            return Err(ManifestError::Duplicate {
-                id: w[0].id.clone(),
-                first: w[0].dir.clone(),
-                second: w[1].dir.clone(),
-            });
-        }
         resolve_order(mods)
     }
 }
@@ -215,8 +207,17 @@ impl ModManifest {
 /// Deterministic: among mods that are ready, the smallest id goes first.
 pub fn resolve_order(mods: Vec<ModManifest>) -> Result<Vec<ModManifest>, ManifestError> {
     use std::collections::BTreeMap;
-    let mut pending: BTreeMap<String, ModManifest> =
-        mods.into_iter().map(|m| (m.id.clone(), m)).collect();
+    let mut pending: BTreeMap<String, ModManifest> = BTreeMap::new();
+    for m in mods {
+        if let Some(first) = pending.get(&m.id) {
+            return Err(ManifestError::Duplicate {
+                id: m.id,
+                first: first.dir.clone(),
+                second: m.dir,
+            });
+        }
+        pending.insert(m.id.clone(), m);
+    }
     for m in pending.values() {
         if let Some(missing) = m.dependencies.iter().find(|d| !pending.contains_key(*d)) {
             return Err(ManifestError::MissingDependency {
@@ -292,6 +293,19 @@ mod tests {
     fn accepts_valid_manifest() {
         let m = parse(OK).unwrap();
         assert!(m.has(Capability::WorldWrite));
+    }
+
+    #[test]
+    fn resolver_rejects_duplicate_ids() {
+        let mut first = with_deps("a", &[]);
+        first.dir = "first".into();
+        let mut second = first.clone();
+        second.dir = "second".into();
+        assert!(matches!(
+            resolve_order(vec![first, second]),
+            Err(ManifestError::Duplicate { id, first, second })
+                if id == "a" && first == Path::new("first") && second == Path::new("second")
+        ));
     }
 
     #[test]

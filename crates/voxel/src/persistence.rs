@@ -258,6 +258,14 @@ mod tests {
         let id = chunk_block(&chunks, p);
         assert_eq!(bare.name(id), "core:stone");
         assert!(bare.is_solid(id));
+        let mut restored = flat_world(1);
+        for (pos, chunk) in chunks {
+            restored.insert_saved(pos, chunk);
+        }
+        save_world(&dir, &restored, &bare, None).unwrap();
+        let mut fresh = crate::BlockRegistry::default();
+        let reloaded = load_chunks_lenient(&dir, &mut fresh).unwrap();
+        assert_eq!(fresh.name(chunk_block(&reloaded, p)), "core:stone");
         fs::remove_dir_all(&dir).unwrap();
     }
 
