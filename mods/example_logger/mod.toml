@@ -1,0 +1,7 @@
+id = "example_logger"
+name = "Example Logger"
+version = "0.1.0"
+api_version = 1
+entry = "main.luau"
+# Needed for world.set_block. Remove it and the demo below raises a script error instead.
+capabilities = ["world.write"]

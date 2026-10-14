@@ -1,0 +1,15 @@
+[package]
+name = "rbvg_client"
+description = "Bevy desktop client: rendering, input, first-person player."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rbvg"
+path = "src/main.rs"
+
+[dependencies]
+rbvg_voxel.workspace = true
+rbvg_scripting.workspace = true
+bevy.workspace = true
