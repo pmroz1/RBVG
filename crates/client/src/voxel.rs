@@ -11,12 +11,15 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bevy::asset::RenderAssetUsages;
+use bevy::image::ImageSampler;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
+use rbvg_voxel::atlas::BlockAtlas;
 use rbvg_voxel::meshing::ChunkMesh;
 use rbvg_voxel::streaming::{ChunkPipeline, GenResult, MeshResult, StreamConfig, Ticket};
-use rbvg_voxel::{BlockId, BlockPos, BlockRegistry, ChunkPos, VoxelWorld};
+use rbvg_voxel::{BlockPos, BlockRegistry, ChunkPos, VoxelWorld};
 
 use crate::player::Player;
 
@@ -41,9 +44,13 @@ struct MeshTasks(Vec<(ChunkPos, Ticket, Task<MeshResult>)>);
 #[derive(Resource)]
 pub struct GameWorld(pub VoxelWorld);
 
-/// Per-block linear vertex colours, indexed by runtime id.
+/// Tile layout of the shared chunk texture; the image asset is replaced in place when
+/// the block registry changes (F9), together with a full remesh.
 #[derive(Resource)]
-struct BlockColors(Vec<[f32; 4]>);
+struct Atlas {
+    layout: BlockAtlas,
+    image: Handle<Image>,
+}
 
 #[derive(Resource)]
 struct ChunkMaterial(Handle<StandardMaterial>);
@@ -70,22 +77,17 @@ impl Plugin for VoxelPlugin {
 fn setup_scene(
     mut commands: Commands,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     blocks: Res<Blocks>,
 ) {
-    let colors = blocks
-        .0
-        .iter()
-        .map(|(_, d)| {
-            let [r, g, b] = d.color;
-            Color::srgb(r, g, b).to_linear().to_f32_array()
-        })
-        .collect();
-    commands.insert_resource(BlockColors(colors));
+    let layout = BlockAtlas::build(&blocks.0);
+    let image = images.add(atlas_image(&layout));
     commands.insert_resource(ChunkMaterial(materials.add(StandardMaterial {
-        base_color: Color::WHITE,
+        base_color_texture: Some(image.clone()),
         perceptual_roughness: 1.0,
         ..default()
     })));
+    commands.insert_resource(Atlas { layout, image });
     commands.spawn((
         DirectionalLight {
             illuminance: 8_000.0,
@@ -97,6 +99,23 @@ fn setup_scene(
         brightness: 600.0,
         ..default()
     });
+}
+
+fn atlas_image(atlas: &BlockAtlas) -> Image {
+    let mut image = Image::new(
+        Extent3d {
+            width: atlas.size,
+            height: atlas.size,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        atlas.pixels.clone(),
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    // Pixel-art tiles; the atlas padding keeps neighbouring tiles from bleeding in.
+    image.sampler = ImageSampler::nearest();
+    image
 }
 
 /// Chunk containing a world-space point.
@@ -159,21 +178,18 @@ fn mesh_chunks(
     mut pipeline: ResMut<Pipeline>,
     mut tasks: ResMut<MeshTasks>,
     blocks: Res<Blocks>,
-    mut colors: ResMut<BlockColors>,
+    mut atlas: ResMut<Atlas>,
+    mut images: ResMut<Assets<Image>>,
     material: Res<ChunkMaterial>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut entities: ResMut<ChunkEntities>,
     player: Single<&Transform, With<Player>>,
 ) {
     if blocks.is_changed() {
-        colors.0 = blocks
-            .0
-            .iter()
-            .map(|(_, def)| {
-                let [r, g, b] = def.color;
-                Color::srgb(r, g, b).to_linear().to_f32_array()
-            })
-            .collect();
+        atlas.layout = BlockAtlas::build(&blocks.0);
+        if let Err(e) = images.insert(&atlas.image, atlas_image(&atlas.layout)) {
+            error!("cannot update block atlas: {e}");
+        }
     }
     entities.0.retain(|pos, e| {
         let keep = world.0.is_loaded(*pos);
@@ -197,7 +213,7 @@ fn mesh_chunks(
             }
             continue;
         }
-        let handle = meshes.add(to_bevy_mesh(mesh, &colors.0));
+        let handle = meshes.add(to_bevy_mesh(mesh, &atlas.layout));
         match entities.0.get(&pos) {
             Some(&e) => {
                 commands.entity(e).insert(Mesh3d(handle));
@@ -232,16 +248,12 @@ fn mesh_chunks(
     tasks.0.retain(|(pos, t, _)| p.is_current_mesh(*pos, *t));
 }
 
-fn to_bevy_mesh(m: ChunkMesh, colors: &[[f32; 4]]) -> Mesh {
-    let vertex_colors: Vec<[f32; 4]> = m
+fn to_bevy_mesh(m: ChunkMesh, atlas: &BlockAtlas) -> Mesh {
+    let uvs: Vec<[f32; 2]> = m
         .blocks
         .iter()
-        .map(|b: &BlockId| {
-            colors
-                .get(usize::from(b.0))
-                .copied()
-                .unwrap_or([1.0, 0.0, 1.0, 1.0])
-        })
+        .zip(&m.uvs)
+        .map(|(block, uv)| atlas.uv(*block, *uv))
         .collect();
     Mesh::new(
         PrimitiveTopology::TriangleList,
@@ -249,6 +261,6 @@ fn to_bevy_mesh(m: ChunkMesh, colors: &[[f32; 4]]) -> Mesh {
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, m.positions)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, m.normals)
-    .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vertex_colors)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
     .with_inserted_indices(Indices::U32(m.indices))
 }
