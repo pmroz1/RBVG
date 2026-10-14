@@ -8,7 +8,8 @@ use rbvg_voxel::{BlockRegistry, TerrainGenerator, VoxelWorld};
 
 use crate::DataPaths;
 use crate::player::{EYE_HEIGHT, Player};
-use crate::voxel::{Blocks, ChunkEntities, GameWorld};
+use crate::scripting::Scripts;
+use crate::voxel::{Blocks, ChunkEntities, GameWorld, Pipeline};
 
 pub struct SavePlugin;
 
@@ -20,7 +21,7 @@ impl Plugin for SavePlugin {
 
 fn new_world(registry: &BlockRegistry, seed: u32) -> Result<VoxelWorld, String> {
     let generator = TerrainGenerator::new(seed, registry).map_err(|e| e.to_string())?;
-    Ok(VoxelWorld::new(seed, Box::new(generator)))
+    Ok(VoxelWorld::new(seed, std::sync::Arc::new(generator)))
 }
 
 /// Loads the save in `dir`, or creates a new world with `seed` if there is none.
@@ -58,7 +59,7 @@ fn load(
     let chunks = persistence::load_chunks(dir, registry)?;
     let generator = TerrainGenerator::new(meta.seed, registry)
         .map_err(|e| PersistError::UnknownBlock(e.to_string()))?;
-    let mut world = VoxelWorld::new(meta.seed, Box::new(generator));
+    let mut world = VoxelWorld::new(meta.seed, std::sync::Arc::new(generator));
     for (pos, chunk) in chunks {
         world.insert_saved(pos, chunk);
     }
@@ -72,6 +73,8 @@ fn save_or_load(
     blocks: Res<Blocks>,
     mut world: ResMut<GameWorld>,
     mut entities: ResMut<ChunkEntities>,
+    mut pipeline: ResMut<Pipeline>,
+    mut scripts: ResMut<Scripts>,
     player: Single<(&mut Transform, &mut Player)>,
 ) {
     let (mut transform, mut player) = player.into_inner();
@@ -85,6 +88,10 @@ fn save_or_load(
         match load(&paths.save_dir, &blocks.0) {
             Ok((loaded, feet)) => {
                 world.0 = loaded;
+                // In-flight chunk work and scheduled script callbacks belong to the old
+                // world; late results are rejected by ticket.
+                pipeline.0.reset();
+                scripts.0.clear_scheduled();
                 for (_, e) in entities.0.drain() {
                     commands.entity(e).despawn();
                 }

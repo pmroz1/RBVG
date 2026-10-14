@@ -13,6 +13,7 @@ mod voxel;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
@@ -64,7 +65,7 @@ fn run() -> Result<(), String> {
     let (world, player_pos) = save::load_or_create(&paths.save_dir, &registry, seed)?;
 
     app.insert_resource(paths)
-        .insert_resource(voxel::Blocks(registry))
+        .insert_resource(voxel::Blocks(Arc::new(registry)))
         .insert_resource(voxel::GameWorld(world))
         .insert_resource(scripting::Scripts(host))
         .add_plugins((

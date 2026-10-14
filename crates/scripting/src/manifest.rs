@@ -14,6 +14,9 @@ pub enum Capability {
     /// Allows `world.set_block`.
     #[serde(rename = "world.write")]
     WorldWrite,
+    /// Allows `world.get_block` and `world.is_loaded`.
+    #[serde(rename = "world.read")]
+    WorldRead,
 }
 
 #[derive(Debug, Clone, Deserialize)]

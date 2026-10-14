@@ -1,0 +1,7 @@
+id = "regrowth"
+name = "Magical Regrowth"
+version = "0.1.0"
+api_version = 1
+entry = "main.luau"
+# world.read: inspect the spot before restoring it; world.write: restore the block.
+capabilities = ["world.read", "world.write"]

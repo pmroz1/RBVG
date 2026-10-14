@@ -17,7 +17,7 @@ fn core_blocks_load_and_generate_visible_terrain() {
 
     // Find the chunk containing the surface at the origin and check it meshes.
     let surface = ChunkPos::new(0, generator.surface_height(0, 0).div_euclid(16), 0);
-    let mut world = VoxelWorld::new(42, Box::new(generator));
+    let mut world = VoxelWorld::new(42, std::sync::Arc::new(generator));
     for dy in -1..=1 {
         world.load_chunk(surface.offset(0, dy, 0));
     }

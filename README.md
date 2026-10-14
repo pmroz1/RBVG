@@ -4,21 +4,25 @@ A moddable voxel sandbox engine written in Rust (2024 edition), built on Bevy 0.
 Luau scripting via mlua. The long-term goal is a platform where survival games, RPGs and
 scripted adventures are built from content packs and scripts, without recompiling the engine.
 
-**Status: Phase 1 (playable voxel prototype).** See [docs/ROADMAP.md](docs/ROADMAP.md).
+**Status: Phase 2 in progress (async streaming, world queries, script scheduler done).** See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## What works today
 
 - Procedural, seed-deterministic terrain (grass/dirt/stone, wooden trunks) in 16³ chunks,
-  streamed around the player.
+  generated and meshed on background threads around the player, with stale-result
+  detection.
 - Face-culled chunk meshes, rebuilt only when a chunk (or its border) changes.
 - First-person controller: mouse look, WASD, sprint, jump, gravity, voxel collision.
 - Block breaking/placing with a raycast, a 9-slot hotbar and a target outline.
 - Data-driven blocks (`content/core/blocks.toml`) with namespaced ids.
 - Versioned save/load storing only edited chunks.
 - Sandboxed Luau mods receiving `block_broken` / `block_placed` events and issuing
-  validated world commands. Example: [`mods/example_logger`](mods/example_logger).
-- Debug overlay: FPS/frame time, loaded/rendered chunks, pending work, generation/meshing
-  and script dispatch timings.
+  validated world commands, reading blocks (`world.get_block`) and scheduling callbacks in
+  simulation time (`scheduler.after`). Examples: [`mods/example_logger`](mods/example_logger),
+  [`mods/regrowth`](mods/regrowth) (broken blocks grow back after 3 s).
+- Debug overlay: frame time avg/p95/max, loaded/rendered/visible chunks, pending/active
+  generation and meshing jobs, stale results, generation/meshing/apply latencies, script
+  timings.
 
 ## Requirements
 
@@ -38,6 +42,7 @@ cargo run --release            # play
 cargo test --workspace         # tests (no GPU needed)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
+cargo run --release -p rbvg_voxel --example stream_bench   # headless gen+mesh benchmark
 ```
 
 `RBVG_SEED=<u32>` picks the seed for a new world (default 1337).

@@ -52,6 +52,48 @@ honest. Planned as `before_*` events in Phase 3.
 Axis-separated sweep with sub-steps against voxels. *Why:* players only need voxel
 collision now; Rapier is justified once entities need rigid-body interactions.
 
-## D12 — Main-thread generation and meshing with per-frame caps (temporary)
-*Why:* simplest correct streaming for Phase 1. First Phase 2 task is moving both to
-Bevy's async compute pool.
+## D12 — Main-thread generation and meshing with per-frame caps (superseded by D13)
+*Why:* simplest correct streaming for Phase 1.
+
+## D13 — Async pipeline: Bevy-free scheduler, Bevy task pool as executor
+`rbvg_voxel::streaming::ChunkPipeline` decides what to generate/mesh and validates
+results; the client only spawns its jobs on `AsyncComputeTaskPool` and polls finished
+tasks. *Why:* all ordering, dedup and staleness logic is unit-testable with simulated
+completions, and a headless server can drive it with any executor. Jobs own immutable
+inputs (`Arc` generator/registry, copied snapshots), so there is no shared mutable world
+and no lock. *Trade-off:* a few small maps instead of an explicit state machine; started
+tasks cannot be interrupted, their results are just discarded.
+
+## D14 — Globally unique chunk revisions as incarnation + version
+A process-wide atomic counter stamps a chunk on install and on every change. *Why:* one
+`u64` comparison detects both edits and unload/reload (even after a world reload), where
+per-chunk counters could coincide. A mesh is keyed by the revisions of the chunk and its
+6 face neighbours. *Trade-off:* conservative — an interior edit in a neighbour also
+invalidates an in-flight mesh (it is simply redone).
+
+## D15 — Mesh snapshots copy the chunk plus one border layer per face
+18³ padded copy (~11 KiB) per job. *Why:* owned input, no locks during meshing, and
+exactly the data face culling needs. Edges/corners are not needed for culling; they will
+be added when ambient occlusion needs them.
+
+## D16 — World reads via a scoped, read-only query (no snapshots)
+Scripts read through `WorldQuery`, a narrow trait the engine implements over
+`&VoxelWorld`. It is installed with `Lua::scope` only for the duration of one handler or
+callback call. *Why:* zero copying, no lifetime escape, no reentrancy (commands are still
+queued), and the scripting crate stays Bevy-free. Consistency: one dispatch/tick sees one
+world state; queued commands are visible after they are applied. Unloaded → `nil`, never
+a synchronous load. Gated by the `world.read` capability.
+
+## D17 — In-memory, simulation-time scheduler per mod
+Per-mod binary heap ordered by `(deadline, global seq)`; callbacks live in the mod VM's
+registry table and are removed on run/cancel/error/unload/reload. *Why:* deterministic
+order, O(log n) per operation, no threads, no leaks, and no closure serialization.
+Zero-delay and nested callbacks run on the next tick, so a mod cannot loop forever in one
+tick. *Trade-off:* scheduled work is lost on world reload and exit; durable timers will
+need data-only (serializable) jobs later.
+
+## D18 — Script edits still do not raise events
+Commands from handlers and callbacks are applied without dispatching `block_*` events.
+*Why:* prevents feedback loops between mods. *Limitation:* mods cannot react to other
+mods' edits; an RPG event system will need explicit script-originated events with a cause
+and recursion depth limit.
