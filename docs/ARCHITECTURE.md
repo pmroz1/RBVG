@@ -180,6 +180,22 @@ chunks only, with a block-name palette so runtime ids can change between session
 are written to a temp file, fsynced and renamed. See `rbvg_voxel::persistence` for the
 byte layout.
 
+Startup and F9 explicitly use `LoadPolicy::PreserveMissing`. Unknown names become solid
+magenta, non-placeable placeholders in a **world-scoped registry snapshot**, not installed
+content. Loading is staged and commits only after validation; invalid versions, malformed
+palettes, duplicate chunks, truncation and partial saves fail rather than starting a world
+that might overwrite the save. Saving writes only referenced names, preserving unknown
+blocks under schema v1. Reinstalling content before startup restores its real definition.
+F9 rebuilds from installed content, remaps hotbar names and resets async work and timers.
+Each file is atomic individually; the pair is not a crash-atomic transaction.
+
+## Creative selection
+
+`rbvg_voxel::selection` owns the nine-slot selection and registry validation. The client
+provides a keyboard-scrollable B panel, sorted by persistent ID, with readable names and
+missing-content labels. Enter assigns the highlighted definition to the selected 1–9
+slot. This is creative selection only, not a survival inventory or an item registry.
+
 ## Multiplayer readiness
 
 - Simulation state (`VoxelWorld`, registry, script host) is plain Rust, not Bevy-specific.

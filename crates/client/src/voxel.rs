@@ -159,12 +159,22 @@ fn mesh_chunks(
     mut pipeline: ResMut<Pipeline>,
     mut tasks: ResMut<MeshTasks>,
     blocks: Res<Blocks>,
-    colors: Res<BlockColors>,
+    mut colors: ResMut<BlockColors>,
     material: Res<ChunkMaterial>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut entities: ResMut<ChunkEntities>,
     player: Single<&Transform, With<Player>>,
 ) {
+    if blocks.is_changed() {
+        colors.0 = blocks
+            .0
+            .iter()
+            .map(|(_, def)| {
+                let [r, g, b] = def.color;
+                Color::srgb(r, g, b).to_linear().to_f32_array()
+            })
+            .collect();
+    }
     entities.0.retain(|pos, e| {
         let keep = world.0.is_loaded(*pos);
         if !keep {

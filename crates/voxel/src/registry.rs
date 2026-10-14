@@ -34,6 +34,9 @@ pub struct BlockDef {
     pub solid: bool,
     /// sRGB placeholder colour (0..=1 per channel) until textures land.
     pub color: [f32; 3],
+    /// Runtime-only stand-in for content unavailable in this world.
+    #[serde(skip)]
+    pub missing: bool,
 }
 
 fn default_true() -> bool {
@@ -107,6 +110,7 @@ impl Default for BlockRegistry {
             display_name: "Air".to_owned(),
             solid: false,
             color: [0.0; 3],
+            missing: false,
         };
         Self {
             by_name: HashMap::from([(air.id.clone(), BlockId::AIR)]),
@@ -173,6 +177,7 @@ impl BlockRegistry {
             display_name: format!("Missing: {name}"),
             solid: true,
             color: [1.0, 0.0, 1.0],
+            missing: true,
         })
     }
 
@@ -229,6 +234,7 @@ pub(crate) mod tests {
                 display_name: name.to_owned(),
                 solid: true,
                 color: [0.5; 3],
+                missing: false,
             })
             .unwrap();
         }
@@ -252,6 +258,20 @@ pub(crate) mod tests {
         assert!(r.is_solid(stone));
         assert!(!r.is_solid(BlockId::AIR));
         assert_eq!(r.name(stone), "core:stone");
+        assert!(!r.get(stone).unwrap().missing);
+        assert!(!r.get(BlockId::AIR).unwrap().missing);
+    }
+
+    #[test]
+    fn missing_flag_is_runtime_only() {
+        let mut r = BlockRegistry::default();
+        let id = r.register_missing("mod:removed").unwrap();
+        assert!(r.get(id).unwrap().missing);
+        assert!(
+            r.load_toml("core", &format!("{SRC}\nmissing = true"))
+                .is_err()
+        );
+        assert!(r.id("core:stone").is_none());
     }
 
     #[test]

@@ -48,6 +48,9 @@ pub struct InteractRequest {
 
 pub struct ScriptingPlugin;
 
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ScriptingSystems;
+
 impl Plugin for ScriptingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ScriptStats>()
@@ -57,6 +60,7 @@ impl Plugin for ScriptingPlugin {
                 Update,
                 (dispatch_player_events, tick_scheduler)
                     .chain()
+                    .in_set(ScriptingSystems)
                     .after(crate::interaction::InteractionSystems),
             );
     }

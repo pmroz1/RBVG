@@ -115,3 +115,18 @@ save is read.
 is combined across handlers in deterministic mod order. Other events are notifications
 and cannot be cancelled. *Why:* mods can protect blocks without coupling gameplay to
 rendering. Commands remain queued and are applied after dispatch, even when cancelled.
+
+## D22 — Creative catalog, not survival inventory
+Keep nine slots, with a keyboard-scrollable, alphabetically sorted content catalog and
+explicit slot assignment. Selection/validation lives in the voxel library; Bevy only
+renders the panel and translates keys. Missing definitions are visible but unavailable
+for new placement. *Why:* all mod content is reachable without hardcoded IDs or item,
+stacking and crafting systems.
+
+## D23 — World-scoped missing content, explicit load policy
+Startup and F9 use `PreserveMissing`; strict loading remains available to library callers.
+Stage registry and chunks before replacing the world; keep the installed content registry
+separate. Save only palette names actually referenced by edited chunks, retaining unknown
+names exactly. *Why:* disabling/reinstalling a mod must not lose blocks or leave obsolete
+placeholders in global content. Schema stays v1. *Limit:* the two save files are separately
+atomic, not jointly crash-atomic; a future durable-save revision needs a generation manifest.

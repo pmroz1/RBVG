@@ -225,6 +225,7 @@ mod tests {
             display_name: "Stone".into(),
             solid: true,
             color: [0.5; 3],
+            missing: false,
         })
         .unwrap();
         r

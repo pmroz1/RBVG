@@ -63,9 +63,11 @@ fn run() -> Result<(), String> {
             .map_err(|_| format!("RBVG_SEED `{s}` is not a u32"))?,
         Err(_) => 1337,
     };
+    let content = save::ContentBlocks(Arc::new(registry.clone()));
     let (world, player_pos) = save::load_or_create(&paths.save_dir, &mut registry, seed)?;
 
     app.insert_resource(paths)
+        .insert_resource(content)
         .insert_resource(voxel::Blocks(Arc::new(registry)))
         .insert_resource(voxel::GameWorld(world))
         .insert_resource(scripting::Scripts(load_scripts(&mods)))

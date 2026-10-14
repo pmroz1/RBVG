@@ -218,8 +218,11 @@ implemented. `name` is the human-readable title.
 
 **Save compatibility.** Saves store block names. If a mod is removed, its blocks load as
 solid magenta "Missing: id" placeholders and are saved back under their original ids, so
-re-enabling the mod restores them. (F9 reload requires the same set of blocks as at
-startup.)
+re-enabling the mod restores them. Both startup and F9 use `LoadPolicy::PreserveMissing`.
+Placeholders belong to the loaded world's registry snapshot, not installed content.
+They cannot be newly placed from the creative catalog. Saving preserves referenced unknown
+names under format v1; reinstall the mod and restart to recover real definitions and behavior.
+Corrupt or partial saves are errors, never an invitation to overwrite the existing world.
 
 ## Authoring a mod
 

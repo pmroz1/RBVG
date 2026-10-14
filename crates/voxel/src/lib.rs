@@ -11,6 +11,7 @@ pub mod persistence;
 pub mod physics;
 pub mod raycast;
 pub mod registry;
+pub mod selection;
 pub mod streaming;
 pub mod world;
 

@@ -78,5 +78,15 @@ flat colours), mod version ranges, extended benchmarks, greedy meshing. No inter
 graphical gameplay test was performed (no display); the 3.0 checklist below is for a human:
 cross chunk borders while moving fast; break/place at chunk borders while meshes update;
 F5 during streaming then F9; wait for regrowth / replace the block first; walk away and
-return while timers pend; place `ancient_shrine:altar` (not in hotbar yet unless it is
-among the first 9 solid blocks), press E, expect the message and glow ring after 3 s.
+return while timers pend; open B, assign `ancient_shrine:altar` to a hotbar slot, place it,
+press E, expect the message and glow ring after 3 s.
+
+### Completion milestones
+
+| Milestone | Status | Notes |
+|---|---|---|
+| 3.6 Reliability | 🟡 | Creative catalog and staged, lossless load policy implemented; checkpoint validation pending |
+| 3.7 Textures | ⬜ | Padded atlas with shared material planned |
+| 3.8 Gameplay validation | ⬜ | Synthetic client inputs and software-renderer checks |
+| 3.9 Event reliability | ⬜ | Bounded deferral, explicit rejection and isolated pre-action hooks |
+| 3.10 Release quality | ⬜ | Extended benchmarks and complete workspace checks |

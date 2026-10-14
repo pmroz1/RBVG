@@ -3,6 +3,7 @@
 use bevy::prelude::*;
 use bevy::window::CursorOptions;
 use rbvg_voxel::raycast::{RayHit, raycast};
+use rbvg_voxel::selection::{BlockSelection, catalog};
 use rbvg_voxel::{BlockId, BlockPos};
 
 use crate::player::{Player, cursor_captured};
@@ -25,16 +26,13 @@ pub struct InteractionSettings {
 }
 
 /// Selectable blocks and the current selection.
-#[derive(Resource)]
-pub struct Hotbar {
-    pub slots: Vec<BlockId>,
-    pub selected: usize,
-}
+#[derive(Resource, Deref, DerefMut)]
+pub struct Hotbar(pub BlockSelection);
 
-impl Hotbar {
-    pub fn current(&self) -> Option<BlockId> {
-        self.slots.get(self.selected).copied()
-    }
+#[derive(Resource, Default)]
+pub struct CreativeMenu {
+    pub open: bool,
+    pub index: usize,
 }
 
 /// The block under the crosshair this frame.
@@ -52,11 +50,13 @@ impl Plugin for InteractionPlugin {
         app.add_message::<BlockChanged>()
             .insert_resource(InteractionSettings { reach: 6.0 })
             .init_resource::<Target>()
+            .init_resource::<CreativeMenu>()
             .add_systems(Startup, init_hotbar)
             .add_systems(
                 Update,
                 (
                     select_slot,
+                    creative_input,
                     update_target,
                     interact,
                     edit_blocks,
@@ -69,14 +69,7 @@ impl Plugin for InteractionPlugin {
 }
 
 fn init_hotbar(mut commands: Commands, blocks: Res<Blocks>) {
-    let slots = blocks
-        .0
-        .iter()
-        .filter(|(_, d)| d.solid)
-        .map(|(id, _)| id)
-        .take(9)
-        .collect();
-    commands.insert_resource(Hotbar { slots, selected: 0 });
+    commands.insert_resource(Hotbar(BlockSelection::new(&blocks.0)));
 }
 
 const SLOT_KEYS: [KeyCode; 9] = [
@@ -96,6 +89,62 @@ fn select_slot(keys: Res<ButtonInput<KeyCode>>, mut hotbar: ResMut<Hotbar>) {
         && i < hotbar.slots.len()
     {
         hotbar.selected = i;
+    }
+}
+
+fn creative_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut menu: ResMut<CreativeMenu>,
+    mut hotbar: ResMut<Hotbar>,
+    blocks: Res<Blocks>,
+    mut cursor: Single<&mut CursorOptions>,
+) {
+    if keys.just_pressed(KeyCode::KeyB) {
+        menu.open = !menu.open;
+        cursor.visible = true;
+        cursor.grab_mode = bevy::window::CursorGrabMode::None;
+    }
+    if keys.just_pressed(KeyCode::Escape) {
+        menu.open = false;
+    }
+    if !menu.open {
+        return;
+    }
+    if !blocks.is_changed()
+        && ![
+            KeyCode::ArrowDown,
+            KeyCode::ArrowUp,
+            KeyCode::PageDown,
+            KeyCode::PageUp,
+            KeyCode::Enter,
+        ]
+        .iter()
+        .any(|key| keys.just_pressed(*key))
+    {
+        return;
+    }
+    let entries = catalog(&blocks.0);
+    if entries.is_empty() {
+        menu.index = 0;
+        return;
+    }
+    let last = entries.len() - 1;
+    menu.index = menu.index.min(last);
+    if keys.just_pressed(KeyCode::ArrowDown) {
+        menu.index = (menu.index + 1).min(last);
+    }
+    if keys.just_pressed(KeyCode::ArrowUp) {
+        menu.index = menu.index.saturating_sub(1);
+    }
+    if keys.just_pressed(KeyCode::PageDown) {
+        menu.index = (menu.index + 12).min(last);
+    }
+    if keys.just_pressed(KeyCode::PageUp) {
+        menu.index = menu.index.saturating_sub(12);
+    }
+    if keys.just_pressed(KeyCode::Enter) {
+        let slot = hotbar.selected;
+        hotbar.assign(slot, entries[menu.index].0, &blocks.0);
     }
 }
 
@@ -160,6 +209,9 @@ fn edit_blocks(
         let Some(block) = hotbar.current() else {
             return;
         };
+        if blocks.0.get(block).is_none_or(|def| def.missing) {
+            return;
+        }
         let pos = hit.adjacent();
         // Never place a solid block inside the player.
         if blocks.0.is_solid(block) && Player::aabb(camera.translation).intersects(|p| p == pos) {
@@ -228,6 +280,69 @@ mod tests {
     use crate::scripting::ScriptingPlugin;
     use rbvg_scripting::{ModManifest, ScriptHost, ScriptHostConfig};
     use rbvg_voxel::{TerrainGenerator, VoxelWorld};
+
+    #[test]
+    fn creative_keyboard_selects_mod_content_for_any_slot() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut registry = crate::load_content(&root).unwrap();
+        ModManifest::load(&root.join("mods/ancient_shrine"))
+            .unwrap()
+            .register_blocks(&mut registry)
+            .unwrap();
+        let altar = registry.id("ancient_shrine:altar").unwrap();
+        for i in 0..20 {
+            registry
+                .load_toml(
+                    "test",
+                    &format!(
+                        "format_version = 1\n[[blocks]]\nid = \"test:block_{i:02}\"\n\
+                         display_name = \"Test {i}\"\ncolor = [0.5, 0.5, 0.5]"
+                    ),
+                )
+                .unwrap();
+        }
+        let page_two_block = catalog(&registry)[12].0;
+        let mut keys = ButtonInput::default();
+        keys.press(KeyCode::KeyB);
+        let mut app = App::new();
+        app.insert_resource(Hotbar(BlockSelection::new(&registry)))
+            .insert_resource(Blocks(Arc::new(registry)))
+            .insert_resource(keys)
+            .init_resource::<CreativeMenu>()
+            .add_systems(Update, (select_slot, creative_input).chain());
+        let cursor = app
+            .world_mut()
+            .spawn(CursorOptions {
+                grab_mode: bevy::window::CursorGrabMode::Locked,
+                ..default()
+            })
+            .id();
+        app.update();
+        assert!(app.world().resource::<CreativeMenu>().open);
+        assert!(!cursor_captured(
+            app.world().get::<CursorOptions>(cursor).unwrap()
+        ));
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.reset_all();
+        keys.press(KeyCode::Digit9);
+        keys.press(KeyCode::Enter);
+        app.update();
+        let hotbar = app.world().resource::<Hotbar>();
+        assert_eq!(hotbar.selected, 8);
+        assert_eq!(hotbar.current(), Some(altar));
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.reset_all();
+        keys.press(KeyCode::PageDown);
+        keys.press(KeyCode::Digit3);
+        keys.press(KeyCode::Enter);
+        app.update();
+        assert_eq!(app.world().resource::<CreativeMenu>().index, 12);
+        assert_eq!(
+            app.world().resource::<Hotbar>().current(),
+            Some(page_two_block)
+        );
+        assert_eq!(app.world().resource::<Hotbar>().slots[8], altar);
+    }
 
     #[test]
     fn interaction_keeps_the_target_block_after_a_same_frame_edit() {
