@@ -10,11 +10,13 @@
 mod events;
 mod host;
 mod manifest;
+mod pump;
 mod query;
 
-pub use events::{ScriptCommand, ScriptEvent};
+pub use events::{Envelope, EventOrigin, ScriptCommand, ScriptEvent};
 pub use host::{DispatchStats, MIN_REPEAT_INTERVAL, ScriptError, ScriptHost, ScriptHostConfig};
-pub use manifest::{Capability, ManifestError, ModManifest};
+pub use manifest::{Capability, ManifestError, ModManifest, resolve_order};
+pub use pump::{CommandApplier, PumpLimits, PumpStats, pump};
 pub use query::{NoWorld, VoxelQuery, WorldQuery};
 
 /// Version of the script API. Mods declare the version they target in `mod.toml`.

@@ -189,6 +189,55 @@ events.subscribe("block_broken", function(e)
 end)
 ```
 
+## Phase 3 additions
+
+**Events.** `events.subscribe(name, fn)` now accepts `block_broken`, `block_placed`
+(notifications), `before_block_break` (**cancellable**) and `interact` (player pressed E
+on a block; not cancellable). Every payload has `position`, `block`, `origin`
+(`"player"`, `"mod"`; `"engine"` reserved), `origin_mod` (mod origin only) and `depth`
+(0 = player/engine, +1 per wave of script-caused events). `before_block_break` payloads
+also have `event.cancel()`; calling it elsewhere is a script error. All handlers of a
+cancellable event run in mod load order (dependencies first); the action is cancelled if
+any called `cancel()`. Commands queued by handlers of a cancelled event are still applied.
+
+**Propagation.** Script `world.set_block` calls that change a block raise
+`block_placed`/`block_broken` with origin `mod`. They are queued and dispatched in the
+*next wave* after all commands of the current wave were applied (never recursively).
+Per pump: max depth 8, max 256 events, max 1024 commands; excess is dropped and logged.
+No-op or rejected commands raise no event. Scheduler callbacks' commands go through the
+same pump.
+
+**`ui.notify(message)`** (capability `ui.notify`): queues a notification (1–200 chars)
+the client shows on screen for a few seconds.
+
+**Manifest.** `dependencies = ["id"]`, `optional_dependencies = ["id"]` (load order is
+deterministic, dependencies first; missing deps and cycles are errors), `blocks =
+"blocks.toml"` (block definitions in the mod's own namespace; relative path inside the
+mod directory). `api_version` must equal the engine's; version ranges are not
+implemented. `name` is the human-readable title.
+
+**Save compatibility.** Saves store block names. If a mod is removed, its blocks load as
+solid magenta "Missing: id" placeholders and are saved back under their original ids, so
+re-enabling the mod restores them. (F9 reload requires the same set of blocks as at
+startup.)
+
+## Authoring a mod
+
+1. Create `mods/<id>/mod.toml` (see `mods/ancient_shrine/mod.toml`) and `main.luau`.
+2. Request only the capabilities you need: `world.read`, `world.write`, `ui.notify`.
+3. Define blocks in `blocks.toml` with ids `<id>:<name>`.
+4. Subscribe to events; schedule delayed work with `scheduler.after`; always check
+   `world.is_loaded(p)` before reading or writing after a delay.
+5. Errors are logged with mod id and line and never crash the game; a capability error
+   means the manifest is missing a capability.
+
+`ancient_shrine`: the `interact` handler ignores every block except
+`ancient_shrine:altar`, notifies, and schedules a 3 s ritual. The callback re-checks the
+altar is still loaded and present, then turns the blocks around the altar into
+`ancient_shrine:glowstone` and notifies again. Other mods observe the result as
+`block_placed` events with `origin == "mod"`. Removing the mod removes the behaviour; the
+engine has no shrine-specific code.
+
 ## Planned API (not implemented)
 
 Target shapes for later phases: `world.spawn_entity(id, pos)`,

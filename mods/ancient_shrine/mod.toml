@@ -1,0 +1,9 @@
+id = "ancient_shrine"
+name = "Ancient Shrine"
+version = "0.1.0"
+api_version = 1
+entry = "main.luau"
+blocks = "blocks.toml"
+# world.read: inspect the ground around the altar; world.write: transform it;
+# ui.notify: show messages to the player.
+capabilities = ["world.read", "world.write", "ui.notify"]

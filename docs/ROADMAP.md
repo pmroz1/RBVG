@@ -67,3 +67,16 @@ dialogue and quest registries with persistent state, a sample fantasy RPG experi
 
 Headless `rbvg_server`, authoritative simulation, chunk/entity replication with interest
 management, server-side scripts, permissions, world editing tools, experience packaging.
+
+## Phase 3 status
+Done: events with origin/depth, `before_block_break` cancellation, `interact` (E), bounded
+event pump, `ui.notify`, mod dependencies and resolution, mod block files, missing-content
+placeholders, `ancient_shrine` mod with headless end-to-end test.
+
+**Not done / unverified:** textured rendering (3.1: no texture atlas, blocks still use
+flat colours), mod version ranges, extended benchmarks, greedy meshing. No interactive or
+graphical gameplay test was performed (no display); the 3.0 checklist below is for a human:
+cross chunk borders while moving fast; break/place at chunk borders while meshes update;
+F5 during streaming then F9; wait for regrowth / replace the block first; walk away and
+return while timers pend; place `ancient_shrine:altar` (not in hotbar yet unless it is
+among the first 9 solid blocks), press E, expect the message and glow ring after 3 s.

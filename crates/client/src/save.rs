@@ -28,10 +28,15 @@ fn new_world(registry: &BlockRegistry, seed: u32) -> Result<VoxelWorld, String> 
 /// Returns the world and the saved player feet position.
 pub fn load_or_create(
     dir: &Path,
-    registry: &BlockRegistry,
+    registry: &mut BlockRegistry,
     seed: u32,
 ) -> Result<(VoxelWorld, Option<[f32; 3]>), String> {
-    match load(dir, registry) {
+    // Blocks from mods that are no longer installed become "missing" placeholders so a
+    // temporarily disabled mod does not destroy its blocks.
+    let loaded = persistence::load_meta(dir)
+        .and_then(|meta| Ok((meta, persistence::load_chunks_lenient(dir, registry)?)))
+        .and_then(|(meta, chunks)| build(registry, meta, chunks));
+    match loaded {
         Ok(loaded) => {
             info!("loaded world from {}", dir.display());
             Ok(loaded)
@@ -57,6 +62,14 @@ fn load(
 ) -> Result<(VoxelWorld, Option<[f32; 3]>), PersistError> {
     let meta = persistence::load_meta(dir)?;
     let chunks = persistence::load_chunks(dir, registry)?;
+    build(registry, meta, chunks)
+}
+
+fn build(
+    registry: &BlockRegistry,
+    meta: persistence::WorldMeta,
+    chunks: Vec<(rbvg_voxel::coords::ChunkPos, rbvg_voxel::chunk::Chunk)>,
+) -> Result<(VoxelWorld, Option<[f32; 3]>), PersistError> {
     let generator = TerrainGenerator::new(meta.seed, registry)
         .map_err(|e| PersistError::UnknownBlock(e.to_string()))?;
     let mut world = VoxelWorld::new(meta.seed, std::sync::Arc::new(generator));

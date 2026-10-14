@@ -153,6 +153,21 @@ impl BlockRegistry {
         Ok(())
     }
 
+    /// Registers a solid, magenta stand-in for content that a save references but no
+    /// installed mod provides, so the block survives load/save round trips instead of
+    /// being replaced by air. Returns the existing id if `name` is already registered.
+    pub fn register_missing(&mut self, name: &str) -> Result<BlockId, RegistryError> {
+        if let Some(id) = self.id(name) {
+            return Ok(id);
+        }
+        self.register(BlockDef {
+            id: name.to_owned(),
+            display_name: format!("Missing: {name}"),
+            solid: true,
+            color: [1.0, 0.0, 1.0],
+        })
+    }
+
     pub fn id(&self, name: &str) -> Option<BlockId> {
         self.by_name.get(name).copied()
     }

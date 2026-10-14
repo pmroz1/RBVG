@@ -6,7 +6,9 @@ use rbvg_voxel::raycast::{RayHit, raycast};
 use rbvg_voxel::{BlockId, BlockPos};
 
 use crate::player::{Player, cursor_captured};
+use crate::scripting::{InteractRequest, Notification, ScriptStats, Scripts, run_pump};
 use crate::voxel::{Blocks, GameWorld};
+use rbvg_scripting::{ScriptEvent, VoxelQuery};
 
 /// A block was changed by a player. Emitted after the world was updated.
 #[derive(Message, Debug, Clone, Copy)]
@@ -53,7 +55,13 @@ impl Plugin for InteractionPlugin {
             .add_systems(Startup, init_hotbar)
             .add_systems(
                 Update,
-                (select_slot, update_target, edit_blocks, draw_target)
+                (
+                    select_slot,
+                    update_target,
+                    interact,
+                    edit_blocks,
+                    draw_target,
+                )
                     .chain()
                     .in_set(InteractionSystems),
             );
@@ -106,6 +114,23 @@ fn update_target(
     );
 }
 
+/// E: tell scripts the player interacted with the targeted block. The engine attaches no
+/// meaning to it.
+fn interact(
+    keys: Res<ButtonInput<KeyCode>>,
+    cursor: Single<Ref<CursorOptions>>,
+    target: Res<Target>,
+    mut requests: MessageWriter<InteractRequest>,
+) {
+    if cursor_captured(&cursor)
+        && keys.just_pressed(KeyCode::KeyE)
+        && let Some(hit) = target.0
+    {
+        requests.write(InteractRequest { pos: hit.block });
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn edit_blocks(
     mouse: Res<ButtonInput<MouseButton>>,
     cursor: Single<Ref<CursorOptions>>,
@@ -115,6 +140,9 @@ fn edit_blocks(
     mut world: ResMut<GameWorld>,
     camera: Single<&Transform, With<Player>>,
     mut changed: MessageWriter<BlockChanged>,
+    scripts: Res<Scripts>,
+    mut stats: ResMut<ScriptStats>,
+    mut notes: MessageWriter<Notification>,
 ) {
     // Skip while uncaptured, and on the frame the capturing click happens.
     if !cursor_captured(&cursor) || cursor.is_changed() {
@@ -136,6 +164,37 @@ fn edit_blocks(
     } else {
         return;
     };
+    if new == BlockId::AIR {
+        // Cancellable: scripts see the block before it is removed.
+        let event = ScriptEvent::BeforeBlockBreak {
+            pos,
+            block: blocks.0.name(world.0.get_block(pos)).to_owned(),
+        };
+        let (cmds, s) = scripts.0.dispatch(
+            &event,
+            &VoxelQuery {
+                world: &world.0,
+                registry: &blocks.0,
+            },
+        );
+        stats.errors += s.errors;
+        let aabb = Player::aabb(camera.translation);
+        let ns = run_pump(
+            &scripts,
+            &blocks,
+            &mut world,
+            aabb,
+            &mut stats,
+            vec![],
+            cmds,
+        );
+        for n in ns {
+            notes.write(n);
+        }
+        if s.cancelled {
+            return;
+        }
+    }
     match world.0.set_block(pos, new) {
         Ok(old) if old != new => {
             changed.write(BlockChanged { pos, old, new });

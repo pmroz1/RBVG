@@ -92,8 +92,20 @@ Zero-delay and nested callbacks run on the next tick, so a mod cannot loop forev
 tick. *Trade-off:* scheduled work is lost on world reload and exit; durable timers will
 need data-only (serializable) jobs later.
 
-## D18 — Script edits still do not raise events
+## D18 — Script edits still do not raise events (superseded by D19)
 Commands from handlers and callbacks are applied without dispatching `block_*` events.
 *Why:* prevents feedback loops between mods. *Limitation:* mods cannot react to other
 mods' edits; an RPG event system will need explicit script-originated events with a cause
 and recursion depth limit.
+
+## D19 — Wave-based bounded event pump
+Script edits now raise events with origin `mod` and depth+1, dispatched in later waves by
+`rbvg_scripting::pump` (depth 8 / 256 events / 1024 commands per pump, excess dropped and
+logged). *Why:* cross-mod reactions without recursion or unbounded cascades. The engine
+side implements `CommandApplier`, keeping the pump Bevy-free and testable headless.
+*Trade-off:* dropped events are lost, not deferred.
+
+## D20 — Missing mod content becomes placeholders
+Unknown palette names in a save register as solid "Missing" blocks so they round-trip
+instead of becoming air or blocking the load. Mods' block files are registered before the
+save is read.

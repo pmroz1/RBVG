@@ -51,8 +51,8 @@ fn run() -> Result<(), String> {
     ));
 
     let root = std::env::var_os("RBVG_DATA_DIR").map_or_else(|| PathBuf::from("."), PathBuf::from);
-    let registry = load_content(&root)?;
-    let host = load_mods(&root.join("mods"))?;
+    let mut registry = load_content(&root)?;
+    let mods = load_mod_content(&root.join("mods"), &mut registry)?;
     let paths = DataPaths {
         save_dir: root.join("saves").join("world"),
     };
@@ -62,12 +62,12 @@ fn run() -> Result<(), String> {
             .map_err(|_| format!("RBVG_SEED `{s}` is not a u32"))?,
         Err(_) => 1337,
     };
-    let (world, player_pos) = save::load_or_create(&paths.save_dir, &registry, seed)?;
+    let (world, player_pos) = save::load_or_create(&paths.save_dir, &mut registry, seed)?;
 
     app.insert_resource(paths)
         .insert_resource(voxel::Blocks(Arc::new(registry)))
         .insert_resource(voxel::GameWorld(world))
-        .insert_resource(scripting::Scripts(host))
+        .insert_resource(scripting::Scripts(load_scripts(&mods)))
         .add_plugins((
             voxel::VoxelPlugin,
             player::PlayerPlugin {
@@ -97,13 +97,26 @@ fn load_content(root: &Path) -> Result<BlockRegistry, String> {
     Ok(registry)
 }
 
-fn load_mods(dir: &Path) -> Result<ScriptHost, String> {
-    let mut host = ScriptHost::new(ScriptHostConfig::default());
+/// Discovers mods in dependency order and registers their blocks. A mod whose content is
+/// invalid is reported and skipped (its scripts are not loaded either).
+fn load_mod_content(dir: &Path, registry: &mut BlockRegistry) -> Result<Vec<ModManifest>, String> {
+    let mut ok = Vec::new();
     for manifest in ModManifest::discover(dir).map_err(|e| e.to_string())? {
+        match manifest.register_blocks(registry) {
+            Ok(()) => ok.push(manifest),
+            Err(e) => error!("{e}"),
+        }
+    }
+    Ok(ok)
+}
+
+fn load_scripts(mods: &[ModManifest]) -> ScriptHost {
+    let mut host = ScriptHost::new(ScriptHostConfig::default());
+    for manifest in mods {
         // A broken mod is reported but does not prevent the game from starting.
-        if let Err(e) = host.load_mod(&manifest) {
+        if let Err(e) = host.load_mod(manifest) {
             error!("{e}");
         }
     }
-    Ok(host)
+    host
 }

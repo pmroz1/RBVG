@@ -17,6 +17,9 @@ pub enum Capability {
     /// Allows `world.get_block` and `world.is_loaded`.
     #[serde(rename = "world.read")]
     WorldRead,
+    /// Allows `ui.notify`.
+    #[serde(rename = "ui.notify")]
+    UiNotify,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -32,6 +35,16 @@ pub struct ModManifest {
     pub entry: PathBuf,
     #[serde(default)]
     pub capabilities: Vec<Capability>,
+    /// Mod ids that must be installed; they load before this mod.
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    /// Mod ids that load before this mod if installed.
+    #[serde(default)]
+    pub optional_dependencies: Vec<String>,
+    /// Block definition file (same format as `content/core/blocks.toml`), relative to the
+    /// mod directory. Every block must be in the mod's own namespace.
+    #[serde(default)]
+    pub blocks: Option<PathBuf>,
     /// Directory the manifest was loaded from (not part of the file).
     #[serde(skip)]
     pub dir: PathBuf,
@@ -57,6 +70,21 @@ pub enum ManifestError {
     ApiVersion { path: PathBuf, found: u32 },
     #[error("{path}: entry `{entry}` must be a relative `.luau` path inside the mod directory")]
     BadEntry { path: PathBuf, entry: PathBuf },
+    #[error("mod `{id}` requires missing mod `{missing}`")]
+    MissingDependency { id: String, missing: String },
+    #[error("mod dependency cycle: {0}")]
+    Cycle(String),
+    #[error(
+        "{path}: `blocks` path `{blocks}` must be a relative `.toml` path inside the mod directory"
+    )]
+    BadBlocksPath { path: PathBuf, blocks: PathBuf },
+    #[error("{path}: invalid dependency id `{id}`")]
+    BadDependency { path: PathBuf, id: String },
+    #[error("{path}: {source}")]
+    Content {
+        path: PathBuf,
+        source: rbvg_voxel::registry::RegistryError,
+    },
     #[error("mod id `{id}` is declared by both {first} and {second}")]
     Duplicate {
         id: String,
@@ -112,7 +140,42 @@ impl ModManifest {
                 entry: self.entry.clone(),
             });
         }
+        let inside = |p: &Path| p.components().all(|c| matches!(c, Component::Normal(_)));
+        if let Some(b) = &self.blocks
+            && (!inside(b) || b.extension().is_none_or(|e| e != "toml"))
+        {
+            return Err(ManifestError::BadBlocksPath {
+                path,
+                blocks: b.clone(),
+            });
+        }
+        for d in self.dependencies.iter().chain(&self.optional_dependencies) {
+            if !is_valid_name_segment(d) || *d == self.id {
+                return Err(ManifestError::BadDependency {
+                    path,
+                    id: d.clone(),
+                });
+            }
+        }
         Ok(())
+    }
+
+    /// Registers this mod's blocks (if any) in `registry`.
+    pub fn register_blocks(
+        &self,
+        registry: &mut rbvg_voxel::BlockRegistry,
+    ) -> Result<(), ManifestError> {
+        let Some(rel) = &self.blocks else {
+            return Ok(());
+        };
+        let path = self.dir.join(rel);
+        let src = std::fs::read_to_string(&path).map_err(|source| ManifestError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        registry
+            .load_toml(&self.id, &src)
+            .map_err(|source| ManifestError::Content { path, source })
     }
 
     pub fn has(&self, cap: Capability) -> bool {
@@ -144,8 +207,39 @@ impl ModManifest {
                 second: w[1].dir.clone(),
             });
         }
-        Ok(mods)
+        resolve_order(mods)
     }
+}
+
+/// Orders mods so every dependency (and installed optional dependency) loads first.
+/// Deterministic: among mods that are ready, the smallest id goes first.
+pub fn resolve_order(mods: Vec<ModManifest>) -> Result<Vec<ModManifest>, ManifestError> {
+    use std::collections::BTreeMap;
+    let mut pending: BTreeMap<String, ModManifest> =
+        mods.into_iter().map(|m| (m.id.clone(), m)).collect();
+    for m in pending.values() {
+        if let Some(missing) = m.dependencies.iter().find(|d| !pending.contains_key(*d)) {
+            return Err(ManifestError::MissingDependency {
+                id: m.id.clone(),
+                missing: missing.clone(),
+            });
+        }
+    }
+    let mut out: Vec<ModManifest> = Vec::with_capacity(pending.len());
+    while !pending.is_empty() {
+        let ready = pending.values().find(|m| {
+            m.dependencies
+                .iter()
+                .chain(&m.optional_dependencies)
+                .all(|d| !pending.contains_key(d))
+        });
+        let Some(id) = ready.map(|m| m.id.clone()) else {
+            let ids: Vec<_> = pending.keys().cloned().collect();
+            return Err(ManifestError::Cycle(ids.join(", ")));
+        };
+        out.extend(pending.remove(&id));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -165,6 +259,34 @@ mod tests {
         entry = "main.luau"
         capabilities = ["world.write"]
     "#;
+
+    fn with_deps(id: &str, deps: &[&str]) -> ModManifest {
+        let mut m = parse(OK).unwrap();
+        m.id = id.into();
+        m.dependencies = deps.iter().map(|d| (*d).into()).collect();
+        m
+    }
+
+    #[test]
+    fn dependencies_load_first_and_errors_are_reported() {
+        let ids = |r: Result<Vec<ModManifest>, _>| -> Vec<String> {
+            r.unwrap().into_iter().map(|m| m.id).collect()
+        };
+        let order = resolve_order(vec![
+            with_deps("c", &["a"]),
+            with_deps("b", &[]),
+            with_deps("a", &["b"]),
+        ]);
+        assert_eq!(ids(order), ["b", "a", "c"]);
+        assert!(matches!(
+            resolve_order(vec![with_deps("a", &["nope"])]),
+            Err(ManifestError::MissingDependency { .. })
+        ));
+        assert!(matches!(
+            resolve_order(vec![with_deps("a", &["b"]), with_deps("b", &["a"])]),
+            Err(ManifestError::Cycle(_))
+        ));
+    }
 
     #[test]
     fn accepts_valid_manifest() {
