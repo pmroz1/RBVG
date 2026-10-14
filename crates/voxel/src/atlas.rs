@@ -90,9 +90,9 @@ impl BlockAtlas {
 /// Deterministic speckle in the block colour, slightly lighter at the top so the
 /// orientation of side faces is visible.
 fn pattern(tile: &mut [[u8; 4]], id: &str, color: [f32; 3]) {
-    let seed = id
-        .bytes()
-        .fold(0x811c_9dc5u32, |h, b| (h ^ u32::from(b)).wrapping_mul(0x0100_0193));
+    let seed = id.bytes().fold(0x811c_9dc5u32, |h, b| {
+        (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
+    });
     for (i, texel) in tile.iter_mut().enumerate() {
         let (x, y) = (i as u32 % TILE, i as u32 / TILE);
         let mut h = seed ^ x.wrapping_mul(0x9e37_79b1) ^ y.wrapping_mul(0x85eb_ca77);
@@ -140,7 +140,10 @@ mod tests {
     }
 
     fn px(a: &BlockAtlas, uv: [f32; 2]) -> (u32, u32) {
-        ((uv[0] * a.size as f32) as u32, (uv[1] * a.size as f32) as u32)
+        (
+            (uv[0] * a.size as f32) as u32,
+            (uv[1] * a.size as f32) as u32,
+        )
     }
 
     #[test]

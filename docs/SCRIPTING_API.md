@@ -203,7 +203,11 @@ any called `cancel()`. Commands queued by handlers of a cancelled event are stil
 **Propagation.** Script `world.set_block` calls that change a block raise
 `block_placed`/`block_broken` with origin `mod`. They are queued and dispatched in the
 *next wave* after all commands of the current wave were applied (never recursively).
-Per pump: max depth 8, max 256 events, max 1024 commands; excess is dropped and logged.
+Per pump: max depth 8, max 256 events, max 1024 commands. Events over depth 8 and
+commands over the limit are dropped and logged. Events over the event limit are deferred
+(keeping their depth; at most 256 per pump, the rest dropped) and dispatched before new
+events in the next frame, so handlers may see them one frame late. Loading a world (F9)
+discards deferred events.
 No-op or rejected commands raise no event. Scheduler callbacks' commands go through the
 same pump.
 

@@ -1,5 +1,5 @@
 # Core block definitions. `core:air` is built into the engine and must not be listed.
-# Colours are sRGB placeholders until a texture pipeline exists.
+# Colours are sRGB; each block's texture tile is generated from its colour and id.
 format_version = 1
 
 [[blocks]]

@@ -7,7 +7,8 @@
 //! in the same frame, and are visible to every later system. Scripts read the world as
 //! it was when the dispatch/tick started. Script-made edits raise `block_placed`/`block_broken`
 //! events with origin `mod`; they are dispatched in later waves by `rbvg_scripting::pump`,
-//! bounded by depth and event limits (see docs/SCRIPTING_API.md).
+//! bounded by depth and event limits (see docs/SCRIPTING_API.md). Events over the per-pump
+//! event limit wait in [`DeferredEvents`] and are dispatched first in the next frame.
 
 use std::time::Duration;
 
@@ -35,6 +36,11 @@ pub struct ScriptStats {
     pub errors: usize,
 }
 
+/// Events the pump deferred (event limit reached), dispatched before next frame's events.
+/// Bounded per pump by `PumpLimits::max_deferred`; cleared when another world is loaded.
+#[derive(Resource, Default)]
+pub struct DeferredEvents(pub Vec<Envelope>);
+
 /// A script asked to show this message (`ui.notify`).
 #[derive(Message, Debug, Clone)]
 pub struct Notification(pub String);
@@ -54,6 +60,7 @@ pub struct ScriptingSystems;
 impl Plugin for ScriptingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ScriptStats>()
+            .init_resource::<DeferredEvents>()
             .add_message::<Notification>()
             .add_message::<InteractRequest>()
             .add_systems(
@@ -136,6 +143,7 @@ pub fn run_pump(
     world: &mut GameWorld,
     player: Aabb,
     stats: &mut ScriptStats,
+    deferred: &mut DeferredEvents,
     events: Vec<Envelope>,
     commands: Vec<ScriptCommand>,
 ) -> Vec<Notification> {
@@ -155,6 +163,7 @@ pub fn run_pump(
     );
     stats.last_dispatch = started.elapsed();
     stats.errors += s.errors;
+    deferred.0.extend(s.deferred);
     applier.notes.into_iter().map(Notification).collect()
 }
 
@@ -165,10 +174,12 @@ fn dispatch_player_events(
     blocks: Res<Blocks>,
     mut world: ResMut<GameWorld>,
     mut stats: ResMut<ScriptStats>,
+    mut deferred: ResMut<DeferredEvents>,
     mut notes: MessageWriter<Notification>,
     player: Single<&Transform, With<Player>>,
 ) {
-    let mut events = Vec::new();
+    // Older, deferred events go first.
+    let mut events = std::mem::take(&mut deferred.0);
     for change in changes.read() {
         events.push(Envelope::player(if change.new == BlockId::AIR {
             ScriptEvent::BlockBroken {
@@ -202,6 +213,7 @@ fn dispatch_player_events(
         &mut world,
         aabb,
         &mut stats,
+        &mut deferred,
         events,
         vec![],
     ) {
@@ -215,6 +227,7 @@ fn tick_scheduler(
     blocks: Res<Blocks>,
     mut world: ResMut<GameWorld>,
     mut stats: ResMut<ScriptStats>,
+    mut deferred: ResMut<DeferredEvents>,
     mut notes: MessageWriter<Notification>,
     player: Single<&Transform, With<Player>>,
 ) {
@@ -240,6 +253,7 @@ fn tick_scheduler(
         &mut world,
         aabb,
         &mut stats,
+        &mut deferred,
         vec![],
         commands,
     ) {

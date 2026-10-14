@@ -7,7 +7,9 @@ use rbvg_voxel::selection::{BlockSelection, catalog};
 use rbvg_voxel::{BlockId, BlockPos};
 
 use crate::player::{Player, cursor_captured};
-use crate::scripting::{InteractRequest, Notification, ScriptStats, Scripts, run_pump};
+use crate::scripting::{
+    DeferredEvents, InteractRequest, Notification, ScriptStats, Scripts, run_pump,
+};
 use crate::voxel::{Blocks, GameWorld};
 use rbvg_scripting::{ScriptEvent, VoxelQuery};
 
@@ -196,6 +198,7 @@ fn edit_blocks(
     mut changed: MessageWriter<BlockChanged>,
     scripts: Res<Scripts>,
     mut stats: ResMut<ScriptStats>,
+    mut deferred: ResMut<DeferredEvents>,
     mut notes: MessageWriter<Notification>,
 ) {
     // Skip while uncaptured, and on the frame the capturing click happens.
@@ -242,6 +245,7 @@ fn edit_blocks(
             &mut world,
             aabb,
             &mut stats,
+            &mut deferred,
             vec![],
             cmds,
         );
@@ -342,6 +346,96 @@ mod tests {
             Some(page_two_block)
         );
         assert_eq!(app.world().resource::<Hotbar>().slots[8], altar);
+    }
+
+    /// Synthetic mouse input through the real raycast → edit → script pipeline.
+    #[test]
+    fn mouse_clicks_break_place_and_respect_cancellation() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let registry = crate::load_content(&root).unwrap();
+        let (stone, wood) = (
+            registry.id("core:stone").unwrap(),
+            registry.id("core:wood").unwrap(),
+        );
+        let manifest = ModManifest::load(&root.join("mods/ancient_shrine")).unwrap();
+        let mut host = ScriptHost::new(ScriptHostConfig::default());
+        host.load_mod_source(
+            &manifest,
+            r#"
+            events.subscribe("before_block_break", function(e)
+                if e.block == "core:wood" then e.cancel() end
+            end)
+            events.subscribe("block_broken", function(e) ui.notify("broken " .. e.block) end)
+            events.subscribe("block_placed", function(e) ui.notify("placed " .. e.block) end)
+            "#,
+        )
+        .unwrap();
+        // Floating in empty sky, looking straight down at one block 4.5 below the eye.
+        let ground = BlockPos::new(0, 195, 0);
+        let mut world = VoxelWorld::new(7, Arc::new(TerrainGenerator::new(7, &registry).unwrap()));
+        world.load_chunk(ground.chunk());
+        world.set_block(ground, stone).unwrap();
+        let mut hotbar = Hotbar(BlockSelection::new(&registry));
+        hotbar.slots[0] = wood;
+        hotbar.selected = 0;
+        let mut app = App::new();
+        app.insert_resource(GameWorld(world))
+            .insert_resource(Blocks(Arc::new(registry)))
+            .insert_resource(Scripts(host))
+            .insert_resource(hotbar)
+            .insert_resource(InteractionSettings { reach: 6.0 })
+            .init_resource::<Target>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .insert_resource(Time::<()>::default())
+            .add_message::<BlockChanged>()
+            .add_plugins(ScriptingPlugin)
+            .add_systems(
+                Update,
+                (update_target, edit_blocks)
+                    .chain()
+                    .in_set(InteractionSystems),
+            );
+        app.world_mut().spawn(CursorOptions {
+            grab_mode: bevy::window::CursorGrabMode::Locked,
+            ..default()
+        });
+        app.world_mut().spawn((
+            Player::default(),
+            Transform::from_xyz(0.5, 199.5, 0.5).looking_to(Vec3::NEG_Y, Vec3::Z),
+        ));
+        // The frame the cursor gets captured never edits.
+        app.update();
+        let click = |app: &mut App, button: MouseButton| {
+            let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            mouse.reset_all();
+            mouse.press(button);
+            app.update();
+            let notes: Vec<String> = app
+                .world_mut()
+                .resource_mut::<Messages<Notification>>()
+                .drain()
+                .map(|n| n.0)
+                .collect();
+            notes
+        };
+        let above = BlockPos::new(0, 196, 0);
+        let block = |app: &App, pos: BlockPos| app.world().resource::<GameWorld>().0.get_block(pos);
+
+        assert_eq!(click(&mut app, MouseButton::Right), ["placed core:wood"]);
+        assert_eq!(block(&app, above), wood);
+        // Wood is protected: the break is cancelled and no notification is raised.
+        assert!(click(&mut app, MouseButton::Left).is_empty());
+        assert_eq!(block(&app, above), wood);
+        app.world_mut()
+            .resource_mut::<GameWorld>()
+            .0
+            .set_block(above, BlockId::AIR)
+            .unwrap();
+        assert_eq!(click(&mut app, MouseButton::Left), ["broken core:stone"]);
+        assert_eq!(block(&app, ground), BlockId::AIR);
+        // Nothing within reach any more: clicks are ignored.
+        assert!(click(&mut app, MouseButton::Right).is_empty());
+        assert!(app.world().resource::<Target>().0.is_none());
     }
 
     #[test]

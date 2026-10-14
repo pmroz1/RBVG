@@ -32,7 +32,7 @@ pub struct BlockDef {
     /// Whether the block collides and occludes neighbouring faces.
     #[serde(default = "default_true")]
     pub solid: bool,
-    /// sRGB placeholder colour (0..=1 per channel) until textures land.
+    /// sRGB base colour (0..=1 per channel); also tints the block's generated atlas tile.
     pub color: [f32; 3],
     /// Runtime-only stand-in for content unavailable in this world.
     #[serde(skip)]

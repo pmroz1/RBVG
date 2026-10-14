@@ -254,6 +254,39 @@ fn cross_mod_feedback_loop_is_bounded() {
 }
 
 #[test]
+fn events_over_the_limit_are_deferred_in_order_then_bounded() {
+    let counter = r#"
+        local seen = 0
+        events.subscribe("interact", function(e) seen += 1 ui.notify(tostring(seen)) end)
+    "#;
+    let (mut g, mut host) = setup(&[], &[]);
+    let mut m = ModManifest::load(&root().join("mods/ancient_shrine")).unwrap();
+    m.id = "counter".into();
+    m.blocks = None;
+    host.load_mod_source(&m, counter).unwrap();
+    let event = |i: i32| {
+        Envelope::player(ScriptEvent::Interact {
+            pos: g.surface.offset(i, 0, 0),
+            block: "core:grass".into(),
+        })
+    };
+    let limits = PumpLimits {
+        max_events: 2,
+        max_deferred: 3,
+        ..PumpLimits::default()
+    };
+    let events: Vec<_> = (0..6).map(event).collect();
+    let stats = pump(&host, &mut g, events.clone(), vec![], limits);
+    assert_eq!((stats.events, stats.dropped_events), (2, 1));
+    assert_eq!(stats.deferred, events[2..5]);
+    let next = pump(&host, &mut g, stats.deferred, vec![], limits);
+    assert_eq!(next.deferred, events[4..5]);
+    let last = pump(&host, &mut g, next.deferred, vec![], limits);
+    assert!(last.deferred.is_empty() && last.dropped_events == 0);
+    assert_eq!(g.notes, ["1", "2", "3", "4", "5"]);
+}
+
+#[test]
 fn before_block_break_can_be_cancelled_deterministically() {
     let (g, _) = setup(&[], &[]);
     let mut host = ScriptHost::new(ScriptHostConfig::default());

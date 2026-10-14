@@ -127,10 +127,14 @@ be generated in any order and on any thread, and only edits need saving.
 - `meshing::mesh_snapshot` emits one quad per block face whose neighbour is not solid,
   looking across chunk borders through the snapshot's border layers (unloaded neighbours
   count as air). `mesh_chunk` (capture + mesh) remains for synchronous use and tests.
-- Output is per-vertex block ids; the client maps them to colours. Swapping in a greedy
-  mesher or a texture-array material only changes this function / the client mapping.
+- Output is per-vertex block ids plus face-local UVs (upright on side faces, not mirrored).
+  Swapping in a greedy mesher only changes this function / the client mapping.
+- `atlas::BlockAtlas` builds one 16×16 tile per registered block (1-texel replicated
+  border, plus a checkerboard fallback) from content colours and ids, deterministically and
+  without image assets. Missing-content placeholders get the magenta/black checkerboard.
 - The client keeps one entity per non-empty chunk with a single shared
-  `StandardMaterial` (vertex colours).
+  `StandardMaterial` whose base colour texture is the atlas (nearest sampling). When the
+  registry changes (F9) the atlas image is replaced in place before the full remesh.
 
 ## Frame flow (client)
 
