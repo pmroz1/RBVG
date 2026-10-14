@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = ["crates/voxel", "crates/scripting", "crates/client"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+rbvg_voxel = { path = "crates/voxel" }
+rbvg_scripting = { path = "crates/scripting" }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+thiserror = "2"
+tracing = "0.1"
+noise = "0.9"
+mlua = { version = "0.12", features = ["luau", "send"] }
+bevy = { version = "0.20", default-features = false, features = ["3d", "ui"] }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

@@ -1,0 +1,12 @@
+[package]
+name = "rbvg_voxel"
+description = "Renderer-independent voxel world: coordinates, block registry, chunks, generation, meshing, persistence."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+noise.workspace = true
