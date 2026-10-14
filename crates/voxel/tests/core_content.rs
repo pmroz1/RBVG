@@ -5,7 +5,10 @@ use rbvg_voxel::{BlockRegistry, ChunkPos, TerrainGenerator, VoxelWorld};
 
 #[test]
 fn core_blocks_load_and_generate_visible_terrain() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/core/blocks.toml");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../content/core/blocks.toml"
+    );
     let mut registry = BlockRegistry::default();
     registry
         .load_toml("core", &std::fs::read_to_string(path).unwrap())
