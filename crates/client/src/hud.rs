@@ -4,7 +4,7 @@ use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use rbvg_voxel::streaming::LatencyStats;
 
-use crate::interaction::{CreativeMenu, Hotbar, Target};
+use crate::interaction::{CreativeMenu, GameMode, Hotbar, Inventory, Target};
 use crate::player::Player;
 use crate::scripting::{Notification, ScriptStats};
 use crate::voxel::{Blocks, ChunkRender, GameWorld, Pipeline};
@@ -158,7 +158,7 @@ fn update_debug(
          ms avg/p95/max: gen {}  mesh {}  apply {}\n\
          script dispatch {:.3} ms  scheduler {:.3} ms ({} pending)  script errors {}\n\
          target {target}\n\
-         [click] capture mouse  [Esc] release  [B] creative  [E] interact  [F5] save  [F9] load",
+         [click] capture mouse  [Esc] release  [B] creative  [F4] mode  [E] interact  [F5] save  [F9] load",
         pos.x,
         pos.y,
         pos.z,
@@ -186,21 +186,34 @@ fn update_debug(
 
 fn update_hotbar(
     hotbar: Res<Hotbar>,
+    mode: Res<GameMode>,
+    inventory: Res<Inventory>,
     blocks: Res<Blocks>,
     mut text: Single<&mut Text, With<HotbarText>>,
 ) {
-    if !hotbar.is_changed() && !blocks.is_changed() {
+    if !hotbar.is_changed() && !blocks.is_changed() && !mode.is_changed() && !inventory.is_changed()
+    {
         return;
     }
-    text.0 = hotbar
-        .slots
-        .iter()
+    let survival = *mode == GameMode::Survival;
+    let slots = hotbar.slots.iter().enumerate().map(|(i, id)| {
+        if survival {
+            inventory.get(i).map(|s| (s.block, Some(s.count)))
+        } else {
+            Some((*id, None)).filter(|(id, _)| *id != rbvg_voxel::BlockId::AIR)
+        }
+    });
+    let mode = if survival { "Survival" } else { "Creative" };
+    text.0 = format!("{mode} [F4]  ");
+    text.0 += &slots
         .enumerate()
-        .map(|(i, id)| {
-            let name = if *id == rbvg_voxel::BlockId::AIR {
-                "Empty"
-            } else {
-                blocks.0.get(*id).map_or("?", |d| d.display_name.as_str())
+        .map(|(i, slot)| {
+            let name = match slot {
+                None => "Empty".to_owned(),
+                Some((id, count)) => {
+                    let name = blocks.0.get(id).map_or("?", |d| d.display_name.as_str());
+                    count.map_or_else(|| name.to_owned(), |n| format!("{name} x{n}"))
+                }
             };
             if i == hotbar.selected {
                 format!("[{} {name}]", i + 1)

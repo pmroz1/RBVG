@@ -179,7 +179,8 @@ See [SCRIPTING_API.md](SCRIPTING_API.md) for the API. Structure:
 
 ## Persistence
 
-`saves/<name>/world.toml` (format version, seed, player position) plus `chunks.bin` (edited
+`saves/<name>/world.toml` (format version, seed, player position, optional survival
+inventory as `[[inventory]]` `slot`/`block` name/`count` tables) plus `chunks.bin` (edited
 chunks only, with a block-name palette so runtime ids can change between sessions). Files
 are written to a temp file, fsynced and renamed. See `rbvg_voxel::persistence` for the
 byte layout.
@@ -190,7 +191,9 @@ content. Loading is staged and commits only after validation; invalid versions, 
 palettes, duplicate chunks, truncation and partial saves fail rather than starting a world
 that might overwrite the save. Saving writes only referenced names, preserving unknown
 blocks under schema v1. Reinstalling content before startup restores its real definition.
-F9 rebuilds from installed content, remaps hotbar names and resets async work and timers.
+F9 rebuilds from installed content, remaps hotbar names, replaces the inventory with the
+saved one and resets async work and timers. Inventory names resolve under the same load
+policy as the palette; invalid slots, counts or names fail the whole load.
 Each file is atomic individually; the pair is not a crash-atomic transaction.
 
 ## Creative selection
@@ -199,6 +202,19 @@ Each file is atomic individually; the pair is not a crash-atomic transaction.
 provides a keyboard-scrollable B panel, sorted by persistent ID, with readable names and
 missing-content labels. Enter assigns the highlighted definition to the selected 1–9
 slot. This is creative selection only, not a survival inventory or an item registry.
+
+## Survival inventory
+
+`rbvg_voxel::inventory::BlockInventory` holds nine slots of `(BlockId, 1..=64)` stacks of
+registered solid blocks. `add` merges into matching stacks, then empty slots, and is
+all-or-nothing; `remove` takes from one slot and never goes below zero. The client keeps a
+`GameMode` (F4, Creative by default) and an `Inventory` resource. In Survival the selected
+hotbar index refers to the inventory slot. A break is checked for space before
+`before_block_break` and again after its commands applied (they may replace the block);
+if the actually removed block does not fit, the break is refused. After a successful
+`VoxelWorld::set_block` the removed block is added, or one placed block is removed.
+Survival placement requires air and a non-missing solid block. Script commands never
+touch the inventory.
 
 ## Multiplayer readiness
 
