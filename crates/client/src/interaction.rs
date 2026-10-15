@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 use bevy::window::CursorOptions;
+use rbvg_voxel::inventory::BlockInventory;
 use rbvg_voxel::raycast::{RayHit, raycast};
 use rbvg_voxel::selection::{BlockSelection, catalog};
 use rbvg_voxel::{BlockId, BlockPos};
@@ -31,6 +32,19 @@ pub struct InteractionSettings {
 #[derive(Resource, Deref, DerefMut)]
 pub struct Hotbar(pub BlockSelection);
 
+/// F4 toggles. Creative places unlimited hotbar blocks; Survival mines into and places
+/// from [`Inventory`].
+#[derive(Resource, Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameMode {
+    #[default]
+    Creative,
+    Survival,
+}
+
+/// The player's survival blocks; saved and reloaded with the world.
+#[derive(Resource, Default, Deref, DerefMut)]
+pub struct Inventory(pub BlockInventory);
+
 #[derive(Resource, Default)]
 pub struct CreativeMenu {
     pub open: bool,
@@ -51,13 +65,18 @@ impl Plugin for InteractionPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<BlockChanged>()
             .insert_resource(InteractionSettings { reach: 6.0 })
+            .init_resource::<GameMode>()
+            .init_resource::<Inventory>()
             .init_resource::<Target>()
             .init_resource::<CreativeMenu>()
+            .init_resource::<GameMode>()
+            .init_resource::<Inventory>()
             .add_systems(Startup, init_hotbar)
             .add_systems(
                 Update,
                 (
                     select_slot,
+                    toggle_mode,
                     creative_input,
                     update_target,
                     interact,
@@ -94,13 +113,30 @@ fn select_slot(keys: Res<ButtonInput<KeyCode>>, mut hotbar: ResMut<Hotbar>) {
     }
 }
 
+fn toggle_mode(keys: Res<ButtonInput<KeyCode>>, mut mode: ResMut<GameMode>) {
+    if keys.just_pressed(KeyCode::F4) {
+        *mode = match *mode {
+            GameMode::Creative => GameMode::Survival,
+            GameMode::Survival => GameMode::Creative,
+        };
+    }
+}
+
 fn creative_input(
     keys: Res<ButtonInput<KeyCode>>,
+    mode: Res<GameMode>,
     mut menu: ResMut<CreativeMenu>,
     mut hotbar: ResMut<Hotbar>,
     blocks: Res<Blocks>,
     mut cursor: Single<&mut CursorOptions>,
 ) {
+    // The catalog is creative-only; survival blocks come from mining.
+    if *mode == GameMode::Survival {
+        if menu.open {
+            menu.open = false;
+        }
+        return;
+    }
     if keys.just_pressed(KeyCode::KeyB) {
         menu.open = !menu.open;
         cursor.visible = true;
@@ -200,16 +236,32 @@ fn edit_blocks(
     mut stats: ResMut<ScriptStats>,
     mut deferred: ResMut<DeferredEvents>,
     mut notes: MessageWriter<Notification>,
+    mode: Res<GameMode>,
+    mut inventory: ResMut<Inventory>,
 ) {
     // Skip while uncaptured, and on the frame the capturing click happens.
     if !cursor_captured(&cursor) || cursor.is_changed() {
         return;
     }
     let Some(hit) = target.0 else { return };
+    let survival = *mode == GameMode::Survival;
+    // Survival breaks are refused, not destructive, when the block cannot be stored.
+    let fits = |inventory: &Inventory, block: BlockId| {
+        block == BlockId::AIR || (blocks.0.is_solid(block) && inventory.space_for(block) > 0)
+    };
     let (pos, new) = if mouse.just_pressed(MouseButton::Left) {
+        if survival && !fits(&inventory, world.0.get_block(hit.block)) {
+            notes.write(Notification("Inventory full".into()));
+            return;
+        }
         (hit.block, BlockId::AIR)
     } else if mouse.just_pressed(MouseButton::Right) {
-        let Some(block) = hotbar.current() else {
+        let current = if survival {
+            inventory.get(hotbar.selected).map(|stack| stack.block)
+        } else {
+            hotbar.current()
+        };
+        let Some(block) = current else {
             return;
         };
         if blocks
@@ -222,6 +274,10 @@ fn edit_blocks(
         let pos = hit.adjacent();
         // Never place a solid block inside the player.
         if blocks.0.is_solid(block) && Player::aabb(camera.translation).intersects(|p| p == pos) {
+            return;
+        }
+        // Survival never overwrites (and so destroys) a non-air block.
+        if survival && world.0.get_block(pos) != BlockId::AIR {
             return;
         }
         (pos, block)
@@ -259,9 +315,25 @@ fn edit_blocks(
         if s.cancelled {
             return;
         }
+        // Scripts may have replaced the block; check what would actually be removed.
+        if survival && !fits(&inventory, world.0.get_block(pos)) {
+            notes.write(Notification("Inventory full".into()));
+            return;
+        }
     }
     match world.0.set_block(pos, new) {
         Ok(old) if old != new => {
+            if survival {
+                let result = if new == BlockId::AIR {
+                    inventory.add(old, 1, &blocks.0)
+                } else {
+                    inventory.remove(hotbar.selected, 1).map(drop)
+                };
+                // Unreachable after the checks above; reported rather than ignored.
+                if let Err(e) = result {
+                    error!("inventory update after block edit failed: {e}");
+                }
+            }
             changed.write(BlockChanged { pos, old, new });
         }
         Ok(_) => {}
@@ -317,6 +389,7 @@ mod tests {
             .insert_resource(Blocks(Arc::new(registry)))
             .insert_resource(keys)
             .init_resource::<CreativeMenu>()
+            .init_resource::<GameMode>()
             .add_systems(Update, (select_slot, creative_input).chain());
         let cursor = app
             .world_mut()
@@ -396,6 +469,8 @@ mod tests {
             .insert_resource(Scripts(host))
             .insert_resource(hotbar)
             .insert_resource(InteractionSettings { reach: 6.0 })
+            .init_resource::<GameMode>()
+            .init_resource::<Inventory>()
             .init_resource::<Target>()
             .init_resource::<ButtonInput<MouseButton>>()
             .insert_resource(Time::<()>::default())
@@ -554,6 +629,8 @@ mod tests {
             .insert_resource(Scripts(host))
             .insert_resource(hotbar)
             .insert_resource(InteractionSettings { reach: 6.0 })
+            .init_resource::<GameMode>()
+            .init_resource::<Inventory>()
             .init_resource::<Target>()
             .init_resource::<ButtonInput<MouseButton>>()
             .insert_resource(Time::<()>::default())
@@ -622,5 +699,265 @@ mod tests {
                 .pending
                 .is_empty()
         );
+    }
+
+    /// Survival mining/placement through the real raycast → edit → script pipeline.
+    #[test]
+    fn survival_mines_into_and_places_from_the_inventory() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut registry = crate::load_content(&root).unwrap();
+        registry
+            .load_toml(
+                "test",
+                "format_version = 1\n[[blocks]]\nid = \"test:glass\"\n\
+                 display_name = \"Glass\"\nsolid = false\ncolor = [0.5, 0.5, 0.5]",
+            )
+            .unwrap();
+        let gone = registry.register_missing("removed:block").unwrap();
+        let [stone, wood, dirt, glass] =
+            ["core:stone", "core:wood", "core:dirt", "test:glass"].map(|n| registry.id(n).unwrap());
+        let manifest = ModManifest::load(&root.join("mods/ancient_shrine")).unwrap();
+        let mut host = ScriptHost::new(ScriptHostConfig::default());
+        // Script edits around the player's edits must never grant or consume items.
+        host.load_mod_source(
+            &manifest,
+            r#"
+            events.subscribe("before_block_break", function(e)
+                ui.notify("before " .. e.block)
+                if e.block == "core:wood" then e.cancel() end
+            end)
+            events.subscribe("block_broken", function(e)
+                if e.position.x == 0 then
+                    world.set_block({ x = 3, y = 195, z = 3 }, "core:air")
+                    ui.notify("broken " .. e.block)
+                end
+            end)
+            events.subscribe("block_placed", function(e)
+                if e.position.x == 0 then
+                    world.set_block({ x = 4, y = 195, z = 4 }, "core:stone")
+                    ui.notify("placed " .. e.block)
+                end
+            end)
+            "#,
+        )
+        .unwrap();
+        let (base, ground, above, top) = (
+            BlockPos::new(0, 194, 0),
+            BlockPos::new(0, 195, 0),
+            BlockPos::new(0, 196, 0),
+            BlockPos::new(0, 197, 0),
+        );
+        let (scripted_break, scripted_place) = (BlockPos::new(3, 195, 3), BlockPos::new(4, 195, 4));
+        let mut world = VoxelWorld::new(7, Arc::new(TerrainGenerator::new(7, &registry).unwrap()));
+        world.load_chunk(ground.chunk());
+        for p in [base, ground, scripted_break] {
+            world.set_block(p, stone).unwrap();
+        }
+        let mut app = App::new();
+        app.insert_resource(GameWorld(world))
+            .insert_resource(Hotbar(BlockSelection::new(&registry)))
+            .insert_resource(Blocks(Arc::new(registry)))
+            .insert_resource(Scripts(host))
+            .insert_resource(InteractionSettings { reach: 6.0 })
+            .insert_resource(GameMode::Survival)
+            .init_resource::<Inventory>()
+            .init_resource::<Target>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .insert_resource(Time::<()>::default())
+            .add_message::<BlockChanged>()
+            .add_plugins(ScriptingPlugin)
+            .add_systems(
+                Update,
+                (update_target, edit_blocks)
+                    .chain()
+                    .in_set(InteractionSystems),
+            );
+        app.world_mut().spawn(CursorOptions {
+            grab_mode: bevy::window::CursorGrabMode::Locked,
+            ..default()
+        });
+        app.world_mut().spawn((
+            Player::default(),
+            Transform::from_xyz(0.5, 200.5, 0.5).looking_to(Vec3::NEG_Y, Vec3::Z),
+        ));
+        app.update();
+        let click = |app: &mut App, button: MouseButton| {
+            let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            mouse.reset_all();
+            mouse.press(button);
+            app.update();
+            let notes: Vec<String> = app
+                .world_mut()
+                .resource_mut::<Messages<Notification>>()
+                .drain()
+                .map(|n| n.0)
+                .collect();
+            notes
+        };
+        let block = |app: &App, pos: BlockPos| app.world().resource::<GameWorld>().0.get_block(pos);
+        fn inv(app: &mut App) -> Mut<'_, Inventory> {
+            app.world_mut().resource_mut::<Inventory>()
+        }
+        let reg = app.world().resource::<Blocks>().0.clone();
+
+        // Full inventory: the break is refused before scripts see it; nothing is destroyed.
+        for _ in 0..9 {
+            inv(&mut app).add(dirt, 64, &reg).unwrap();
+        }
+        assert_eq!(click(&mut app, MouseButton::Left), ["Inventory full"]);
+        assert_eq!(block(&app, ground), stone);
+        inv(&mut app).0 = Default::default();
+
+        // An empty survival slot places nothing, even though the creative slot is set.
+        assert!(click(&mut app, MouseButton::Right).is_empty());
+        assert_eq!(block(&app, above), BlockId::AIR);
+
+        // Breaking grants exactly the removed block; the script's own removal grants nothing.
+        assert_eq!(
+            click(&mut app, MouseButton::Left),
+            ["before core:stone", "broken core:stone"]
+        );
+        assert_eq!(block(&app, ground), BlockId::AIR);
+        assert_eq!(block(&app, scripted_break), BlockId::AIR);
+        assert_eq!(inv(&mut app).count(stone), 1);
+        assert_eq!(inv(&mut app).get(0).unwrap().count, 1);
+
+        // Placing consumes exactly one; the script's own placement consumes nothing.
+        assert_eq!(click(&mut app, MouseButton::Right), ["placed core:stone"]);
+        assert_eq!(block(&app, ground), stone);
+        assert_eq!(block(&app, scripted_place), stone);
+        assert_eq!(inv(&mut app).get(0), None);
+        assert!(click(&mut app, MouseButton::Right).is_empty());
+        assert_eq!(block(&app, above), BlockId::AIR);
+
+        // A cancelled break grants nothing.
+        inv(&mut app).add(wood, 1, &reg).unwrap();
+        assert_eq!(click(&mut app, MouseButton::Right), ["placed core:wood"]);
+        assert_eq!(block(&app, above), wood);
+        assert_eq!(click(&mut app, MouseButton::Left), ["before core:wood"]);
+        assert_eq!(block(&app, above), wood);
+        assert_eq!(inv(&mut app).0, Default::default());
+
+        // Rejected placements consume nothing: a non-air target, then a missing block.
+        app.world_mut()
+            .resource_mut::<GameWorld>()
+            .0
+            .set_block(top, glass)
+            .unwrap();
+        inv(&mut app).add(stone, 2, &reg).unwrap();
+        assert!(click(&mut app, MouseButton::Right).is_empty());
+        assert_eq!(block(&app, top), glass);
+        assert_eq!(inv(&mut app).get(0).unwrap().count, 2);
+        app.world_mut()
+            .resource_mut::<GameWorld>()
+            .0
+            .set_block(top, BlockId::AIR)
+            .unwrap();
+        inv(&mut app).0 = Default::default();
+        inv(&mut app).add(gone, 3, &reg).unwrap();
+        assert!(click(&mut app, MouseButton::Right).is_empty());
+        assert_eq!(block(&app, top), BlockId::AIR);
+        assert_eq!(inv(&mut app).count(gone), 3);
+
+        // Creative is still unlimited and leaves the inventory alone.
+        *app.world_mut().resource_mut::<GameMode>() = GameMode::Creative;
+        let creative = app.world().resource::<Hotbar>().current().unwrap();
+        click(&mut app, MouseButton::Right);
+        assert_eq!(block(&app, top), creative);
+        assert_eq!(inv(&mut app).count(gone), 3);
+        assert_eq!(inv(&mut app).count(creative), 0);
+    }
+
+    #[test]
+    fn survival_mining_checks_script_replacements_against_inventory_capacity() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let registry = crate::load_content(&root).unwrap();
+        let [stone, wood, dirt] =
+            ["core:stone", "core:wood", "core:dirt"].map(|n| registry.id(n).unwrap());
+        let manifest = ModManifest::load(&root.join("mods/ancient_shrine")).unwrap();
+        let mut host = ScriptHost::new(ScriptHostConfig::default());
+        host.load_mod_source(
+            &manifest,
+            r#"
+            events.subscribe("before_block_break", function(e)
+                if e.block == "core:stone" then
+                    world.set_block(e.position, "core:wood")
+                end
+            end)
+            "#,
+        )
+        .unwrap();
+        let ground = BlockPos::new(0, 195, 0);
+        let mut world = VoxelWorld::new(7, Arc::new(TerrainGenerator::new(7, &registry).unwrap()));
+        world.load_chunk(ground.chunk());
+        world.set_block(ground, stone).unwrap();
+        let mut app = App::new();
+        app.insert_resource(GameWorld(world))
+            .insert_resource(Hotbar(BlockSelection::new(&registry)))
+            .insert_resource(Blocks(Arc::new(registry)))
+            .insert_resource(Scripts(host))
+            .insert_resource(InteractionSettings { reach: 6.0 })
+            .insert_resource(GameMode::Survival)
+            .init_resource::<Inventory>()
+            .init_resource::<Target>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .insert_resource(Time::<()>::default())
+            .add_message::<BlockChanged>()
+            .add_plugins(ScriptingPlugin)
+            .add_systems(
+                Update,
+                (update_target, edit_blocks)
+                    .chain()
+                    .in_set(InteractionSystems),
+            );
+        app.world_mut().spawn(CursorOptions {
+            grab_mode: bevy::window::CursorGrabMode::Locked,
+            ..default()
+        });
+        app.world_mut().spawn((
+            Player::default(),
+            Transform::from_xyz(0.5, 200.5, 0.5).looking_to(Vec3::NEG_Y, Vec3::Z),
+        ));
+        app.update();
+        let click = |app: &mut App| {
+            let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            mouse.reset_all();
+            mouse.press(MouseButton::Left);
+            app.update();
+            app.world_mut()
+                .resource_mut::<Messages<Notification>>()
+                .drain()
+                .map(|n| n.0)
+                .collect::<Vec<_>>()
+        };
+        let block = |app: &App| app.world().resource::<GameWorld>().0.get_block(ground);
+        let registry = app.world().resource::<Blocks>().0.clone();
+        let full_inventory = {
+            let mut inventory = app.world_mut().resource_mut::<Inventory>();
+            for _ in 0..8 {
+                inventory.add(dirt, 64, &registry).unwrap();
+            }
+            inventory.add(stone, 63, &registry).unwrap();
+            inventory.0.clone()
+        };
+
+        assert_eq!(click(&mut app), ["Inventory full"]);
+        assert_eq!(block(&app), wood);
+        assert_eq!(app.world().resource::<Inventory>().0, full_inventory);
+
+        app.world_mut()
+            .resource_mut::<Inventory>()
+            .remove(0, 64)
+            .unwrap();
+        app.world_mut()
+            .resource_mut::<GameWorld>()
+            .0
+            .set_block(ground, stone)
+            .unwrap();
+        assert!(click(&mut app).is_empty());
+        assert_eq!(block(&app), BlockId::AIR);
+        let inventory = &app.world().resource::<Inventory>().0;
+        assert_eq!(inventory.count(wood), 1);
+        assert_eq!(inventory.count(stone), 63);
     }
 }

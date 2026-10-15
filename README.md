@@ -14,6 +14,9 @@ scripted adventures are built from content packs and scripts, without recompilin
 - Face-culled chunk meshes, rebuilt only when a chunk (or its border) changes.
 - First-person controller: mouse look, WASD, sprint, jump, gravity, voxel collision.
 - Block breaking/placing with a raycast, a 9-slot hotbar and a target outline.
+- Creative (default, unlimited blocks) and Survival (F4): mined blocks go into a nine-slot
+  inventory of up to 64 per stack, placing consumes one, and the inventory is saved with
+  the world.
 - Data-driven blocks (`content/core/blocks.toml`) with namespaced ids.
 - Versioned save/load storing only edited chunks.
 - Sandboxed Luau mods receiving `block_broken` / `block_placed` events and issuing
@@ -59,7 +62,8 @@ cargo run --release -p rbvg_voxel --example stream_bench   # headless gen+mesh b
 | Space | Jump |
 | Left / right click | Break / place block |
 | 1–9 | Select hotbar slot |
-| B | Open/close creative block selection (releases mouse) |
+| F4 | Toggle Creative / Survival (Creative at start) |
+| B | Open/close creative block selection (releases mouse; Creative only) |
 | Up / Down, Page Up / Down | Browse every registered block while creative selection is open |
 | Enter | Assign highlighted block to the selected hotbar slot |
 | E | Interact with the targeted block (mods decide the behavior) |
@@ -69,6 +73,11 @@ The save in `saves/world` is loaded automatically at startup. Delete it to start
 Creative selection lists block names and persistent IDs in alphabetical order, including mod
 content. Missing-content entries are visibly marked and cannot be newly placed. Close the
 panel and click to recapture the mouse; there are still exactly nine hotbar slots.
+
+In Survival the hotbar shows inventory stacks (`Stone x3`). Breaking a block adds it to the
+inventory; if it does not fit, the break is refused ("Inventory full") instead of destroying
+the block. Placing uses one block from the selected stack and only places into air. Blocks
+whose mod is not installed stay in the inventory, but cannot be placed until it returns.
 
 ## Repository layout
 
@@ -111,7 +120,10 @@ save with mod blocks for the missing-content test.
 7. Exit, disable a content mod, load/save: missing blocks remain visible and named.
    Reinstall and restart: the original definitions return. A corrupt/partial save must
    report an error, not start a new world over it.
-8. Check texture faces upright, illumination across borders, target outline, UI text,
+8. F4 to Survival: mine stone (hotbar shows `Stone x1`), place it (stack disappears),
+   F5, mine/place more, F9: inventory and blocks match the save. F4 back to Creative and
+   place unlimited blocks.
+9. Check texture faces upright, illumination across borders, target outline, UI text,
    Escape/re-capture, window focus loss and mouse capture on your actual OS/GPU.
 
 Synthetic input tests cannot certify native cursor lock, focus, display scaling or GPU

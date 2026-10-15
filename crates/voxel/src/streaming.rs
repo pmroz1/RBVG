@@ -652,12 +652,12 @@ mod tests {
         let jobs = p.update(&mut w, ChunkPos::new(1, 0, 0));
         assert!(!jobs.is_empty());
         let dir = std::env::temp_dir().join(format!("rbvg_stream_save_{}", std::process::id()));
-        crate::persistence::save_world(&dir, &w, &reg, None).unwrap();
+        crate::persistence::save_world(&dir, &w, &reg, None, &Default::default()).unwrap();
         let during = crate::persistence::load_chunks(&dir, &reg).unwrap();
         for job in jobs {
             p.finish_generation(&mut w, job.run());
         }
-        crate::persistence::save_world(&dir, &w, &reg, None).unwrap();
+        crate::persistence::save_world(&dir, &w, &reg, None, &Default::default()).unwrap();
         let after = crate::persistence::load_chunks(&dir, &reg).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(during.len(), 1, "only the edited chunk is saved");

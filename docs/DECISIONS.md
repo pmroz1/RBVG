@@ -146,3 +146,16 @@ up to 256 per pump, and dispatched first in the next frame. Depth overruns and c
 overruns are still dropped and logged. Loading another world clears the backlog. *Why:* a
 burst of legitimate events (e.g. a large ritual) is not silently lost, while the depth
 limit still ends feedback loops and the per-frame cost stays bounded.
+
+## D26 — Minimal survival block inventory, stored in `world.toml`
+Survival uses a nine-slot, 64-per-stack `BlockInventory` of placeable blocks in
+`rbvg_voxel`, not items or ECS entities. Mining adds the actually removed block after
+`set_block`, refuses the break when it does not fit, and grants nothing for cancelled
+breaks or script edits; placement consumes one block only after a successful edit. The
+inventory is saved by block name as optional `[[inventory]]` tables in `world.toml`, so
+schema v1 saves without it still load (empty inventory) and no new reader is needed; older
+engines reject the unknown key instead of losing it. Unknown names become world-scoped
+missing placeholders, like palette names. The game mode is not persisted. *Why:* a
+playable loop without an item hierarchy, crafting or a new file. *Limit:* blocks only; no
+drops, splitting UI or per-player inventories, and a block whose definition later becomes
+non-solid stays stored but cannot be placed.

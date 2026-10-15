@@ -48,7 +48,8 @@ Remaining Phase 2 items:
    opaque/transparent meshes) and authored texture files remain.
 4. Greedy meshing, mesh buffer pooling, frustum-aware load priority.
 5. Biome registry and generator stages (height → surface → caves → ores → features).
-6. Item registry, inventory, drops, hotbar backed by inventory.
+6. ~~Hotbar backed by inventory~~ (minimal survival block inventory, D26); item registry
+   and standalone items, drops as entities, inventory UI remain.
 7. Crafting/recipe registry.
 8. Light propagation (sky + block light), stored per chunk.
 9. Basic UI framework for inventory/crafting.
@@ -93,3 +94,4 @@ press E, expect the message and glow ring after 3 s.
 | 3.8 Gameplay validation | ✅ | Synthetic keyboard/mouse tests (creative, place/break/cancel, F5/F9); llvmpipe run |
 | 3.9 Event reliability | ✅ | Bounded deferral (D25); rejected commands logged per mod; per-mod handler isolation |
 | 3.10 Release quality | 🟡 | fmt/clippy/tests green; `stream_bench` run; real-GPU FPS not measured |
+| 3.11 Survival inventory | ✅ | F4 mode; 9×64 block inventory; mine/place/cancel/full rules; saved by name in `world.toml` (headless tests only, no real-GPU run) |

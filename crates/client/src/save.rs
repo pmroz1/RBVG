@@ -4,11 +4,14 @@ use std::path::Path;
 use std::sync::Arc;
 
 use bevy::prelude::*;
+use rbvg_voxel::inventory::BlockInventory;
 use rbvg_voxel::persistence::{self, LoadPolicy, PersistError};
 use rbvg_voxel::{BlockRegistry, TerrainGenerator, VoxelWorld};
 
 use crate::DataPaths;
-use crate::interaction::{BlockChanged, CreativeMenu, Hotbar, InteractionSystems, Target};
+use crate::interaction::{
+    BlockChanged, CreativeMenu, Hotbar, InteractionSystems, Inventory, Target,
+};
 use crate::player::{EYE_HEIGHT, Player};
 use crate::scripting::{DeferredEvents, InteractRequest, ScriptingSystems, Scripts};
 use crate::voxel::{Blocks, ChunkEntities, GameWorld, Pipeline};
@@ -36,12 +39,12 @@ fn new_world(registry: &BlockRegistry, seed: u32) -> Result<VoxelWorld, String> 
 }
 
 /// Loads the save in `dir`, or creates a new world with `seed` if there is none.
-/// Returns the world and the saved player feet position.
+/// Returns the world, the saved player feet position and the survival inventory.
 pub fn load_or_create(
     dir: &Path,
     registry: &mut BlockRegistry,
     seed: u32,
-) -> Result<(VoxelWorld, Option<[f32; 3]>), String> {
+) -> Result<(VoxelWorld, Option<[f32; 3]>, BlockInventory), String> {
     let absent = match std::fs::read_dir(dir) {
         Ok(mut entries) => entries
             .next()
@@ -56,13 +59,13 @@ pub fn load_or_create(
             "no save at {}, generating world with seed {seed}",
             dir.display()
         );
-        return Ok((new_world(registry, seed)?, None));
+        return Ok((new_world(registry, seed)?, None, BlockInventory::default()));
     }
     match load(dir, registry, LoadPolicy::PreserveMissing) {
-        Ok((staged, world, feet)) => {
+        Ok((staged, world, feet, inventory)) => {
             *registry = staged;
             info!("loaded world from {}", dir.display());
-            Ok((world, feet))
+            Ok((world, feet, inventory))
         }
         // Refuse to start rather than risk overwriting a save we could not read.
         Err(e) => Err(format!(
@@ -72,16 +75,16 @@ pub fn load_or_create(
     }
 }
 
-fn load(
-    dir: &Path,
-    content: &BlockRegistry,
-    policy: LoadPolicy,
-) -> Result<(BlockRegistry, VoxelWorld, Option<[f32; 3]>), PersistError> {
+/// Staged registry, world, saved feet position and inventory.
+type Loaded = (BlockRegistry, VoxelWorld, Option<[f32; 3]>, BlockInventory);
+
+fn load(dir: &Path, content: &BlockRegistry, policy: LoadPolicy) -> Result<Loaded, PersistError> {
     let meta = persistence::load_meta(dir)?;
     let mut staged = content.clone();
     let chunks = persistence::load_chunks_with_policy(dir, &mut staged, policy)?;
+    let inventory = persistence::load_inventory(&meta, &mut staged, policy)?;
     let (world, feet) = build(&staged, meta, chunks)?;
-    Ok((staged, world, feet))
+    Ok((staged, world, feet, inventory))
 }
 
 fn build(
@@ -113,20 +116,30 @@ fn save_or_load(
     mut interactions: ResMut<Messages<InteractRequest>>,
     mut deferred: ResMut<DeferredEvents>,
     mut target: ResMut<Target>,
-    mut hotbar: ResMut<Hotbar>,
-    mut menu: ResMut<CreativeMenu>,
+    // Grouped to stay within Bevy's system parameter limit.
+    (mut hotbar, mut menu, mut inventory): (
+        ResMut<Hotbar>,
+        ResMut<CreativeMenu>,
+        ResMut<Inventory>,
+    ),
     player: Single<(&mut Transform, &mut Player)>,
 ) {
     let (mut transform, mut player) = player.into_inner();
     if keys.just_pressed(KeyCode::F5) {
         let feet = Player::feet(transform.translation).to_array();
-        match persistence::save_world(&paths.save_dir, &world.0, &blocks.0, Some(feet)) {
+        match persistence::save_world(
+            &paths.save_dir,
+            &world.0,
+            &blocks.0,
+            Some(feet),
+            &inventory.0,
+        ) {
             Ok(()) => info!("saved world to {}", paths.save_dir.display()),
             Err(e) => error!("save failed: {e}"),
         }
     } else if keys.just_pressed(KeyCode::F9) {
         match load(&paths.save_dir, &content.0, LoadPolicy::PreserveMissing) {
-            Ok((registry, loaded, feet)) => {
+            Ok((registry, loaded, feet, saved_inventory)) => {
                 hotbar.slots = hotbar.slots.map(|id| {
                     registry
                         .id(blocks.0.name(id))
@@ -134,6 +147,7 @@ fn save_or_load(
                 });
                 menu.index = 0;
                 world.0 = loaded;
+                inventory.0 = saved_inventory;
                 blocks.0 = Arc::new(registry);
                 // In-flight chunk work and scheduled script callbacks belong to the old
                 // world; late results are rejected by ticket.
@@ -200,7 +214,14 @@ mod tests {
         world
             .set_block(POS, registry.id("example:glass").unwrap())
             .unwrap();
-        persistence::save_world(dir, &world, &registry, Some([1.0, 80.0, 3.0])).unwrap();
+        persistence::save_world(
+            dir,
+            &world,
+            &registry,
+            Some([1.0, 80.0, 3.0]),
+            &BlockInventory::default(),
+        )
+        .unwrap();
     }
 
     fn reload_app(dir: &Path, registry: BlockRegistry, world: VoxelWorld) -> App {
@@ -227,6 +248,7 @@ mod tests {
             index: 20,
         })
         .insert_resource(GameWorld(world))
+        .init_resource::<Inventory>()
         .insert_resource(Pipeline(ChunkPipeline::new(StreamConfig::default())))
         .insert_resource(ChunkEntities::default())
         .insert_resource(Scripts(scripts))
@@ -281,7 +303,7 @@ mod tests {
         let dir = test_dir("reload");
         save_mod_world(&dir);
         let mut registry = content();
-        let (mut world, feet) = load_or_create(&dir, &mut registry, 99).unwrap();
+        let (mut world, feet, _) = load_or_create(&dir, &mut registry, 99).unwrap();
         assert_eq!(feet, Some([1.0, 80.0, 3.0]));
         assert_eq!(world.seed(), 7);
         let missing = registry.id("example:glass").unwrap();
@@ -348,7 +370,8 @@ mod tests {
         app.insert_resource(pipeline);
 
         let clean = new_world(&content(), 99).unwrap();
-        persistence::save_world(&dir, &clean, &content(), None).unwrap();
+        persistence::save_world(&dir, &clean, &content(), None, &BlockInventory::default())
+            .unwrap();
         let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
         keys.reset_all();
         keys.press(KeyCode::F9);
@@ -380,6 +403,10 @@ mod tests {
         let mut app = reload_app(&dir, registry, world);
         let before_registry = app.world().resource::<Blocks>().0.clone();
         let before_slots = app.world().resource::<Hotbar>().slots;
+        app.world_mut()
+            .resource_mut::<Inventory>()
+            .add(stone, 7, &before_registry)
+            .unwrap();
         let mut pipeline = app.world_mut().remove_resource::<Pipeline>().unwrap();
         let job = pipeline
             .0
@@ -413,6 +440,7 @@ mod tests {
         assert_eq!(app.world().resource::<Messages<InteractRequest>>().len(), 1);
         assert_eq!(app.world().resource::<CreativeMenu>().index, 20);
         assert_eq!(app.world().resource::<Hotbar>().slots, before_slots);
+        assert_eq!(app.world().resource::<Inventory>().count(stone), 7);
         let mut players = app.world_mut().query::<(&Transform, &Player)>();
         let (transform, player) = players.single(app.world()).unwrap();
         assert_eq!(transform.translation, Vec3::new(30.0, 90.0, 30.0));
@@ -538,12 +566,98 @@ mod tests {
         let mut registry = content();
         let absent = dir.join("absent");
         for slot in [&dir, &absent] {
-            let (world, feet) = load_or_create(slot, &mut registry, 99).unwrap();
+            let (world, feet, inventory) = load_or_create(slot, &mut registry, 99).unwrap();
+            assert_eq!(inventory, BlockInventory::default());
             assert_eq!(world.seed(), 99);
             assert_eq!(feet, None);
         }
         std::fs::write(dir.join("chunks.tmp"), b"interrupted save").unwrap();
         assert!(load_or_create(&dir, &mut registry, 99).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn f5_f9_restore_inventory_by_name_and_missing_blocks_return() {
+        const BRICK: &str = r#"
+            format_version = 1
+            [[blocks]]
+            id = "example:brick"
+            display_name = "Brick"
+            color = [0.6, 0.2, 0.1]
+        "#;
+        let dir = test_dir("inventory");
+        let mut old = BlockRegistry::default();
+        old.load_toml("example", BRICK).unwrap();
+        old.load_toml("core", include_str!("../../../content/core/blocks.toml"))
+            .unwrap();
+        let (stone, brick) = (
+            old.id("core:stone").unwrap(),
+            old.id("example:brick").unwrap(),
+        );
+        assert_ne!(stone, content().id("core:stone").unwrap());
+        let mut world = new_world(&old, 99).unwrap();
+        world.load_chunk(POS.chunk());
+        world.set_block(POS, brick).unwrap();
+        let mut app = reload_app(&dir, old.clone(), world);
+        {
+            let mut inventory = app.world_mut().resource_mut::<Inventory>();
+            inventory.add(stone, 5, &old).unwrap();
+            inventory.add(brick, 2, &old).unwrap();
+        }
+        let press = |app: &mut App, key: KeyCode| {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.reset_all();
+            keys.press(key);
+            app.update();
+        };
+        press(&mut app, KeyCode::F5);
+        // Changes after the save are discarded by F9.
+        app.world_mut()
+            .resource_mut::<GameWorld>()
+            .0
+            .set_block(POS, BlockId::AIR)
+            .unwrap();
+        app.world_mut()
+            .resource_mut::<Inventory>()
+            .add(stone, 10, &old)
+            .unwrap();
+
+        // Mod uninstalled: names and counts survive, ids follow the new registry.
+        press(&mut app, KeyCode::F9);
+        let registry = app.world().resource::<Blocks>().0.clone();
+        let (stone2, brick2) = (
+            registry.id("core:stone").unwrap(),
+            registry.id("example:brick").unwrap(),
+        );
+        assert!(registry.get(brick2).unwrap().missing);
+        let inventory = &app.world().resource::<Inventory>().0;
+        assert_eq!(inventory.count(stone2), 5);
+        assert_eq!(inventory.count(brick2), 2);
+        let world = &mut app.world_mut().resource_mut::<GameWorld>().0;
+        world.load_chunk(POS.chunk());
+        assert_eq!(world.get_block(POS), brick2);
+        press(&mut app, KeyCode::F5);
+
+        // Mod reinstalled: the stack becomes a real, placeable block again.
+        let mut installed = BlockRegistry::default();
+        installed
+            .load_toml("core", include_str!("../../../content/core/blocks.toml"))
+            .unwrap();
+        installed.load_toml("example", BRICK).unwrap();
+        app.insert_resource(ContentBlocks(Arc::new(installed)));
+        press(&mut app, KeyCode::F9);
+        let registry = app.world().resource::<Blocks>().0.clone();
+        let brick3 = registry.id("example:brick").unwrap();
+        assert!(!registry.get(brick3).unwrap().missing);
+        let inventory = &app.world().resource::<Inventory>().0;
+        assert_eq!(
+            inventory.get(1),
+            Some(rbvg_voxel::inventory::Stack {
+                block: brick3,
+                count: 2
+            })
+        );
+        assert_eq!(inventory.count(registry.id("core:stone").unwrap()), 5);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

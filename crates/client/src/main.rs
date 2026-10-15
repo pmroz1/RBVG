@@ -64,12 +64,14 @@ fn run() -> Result<(), String> {
         Err(_) => 1337,
     };
     let content = save::ContentBlocks(Arc::new(registry.clone()));
-    let (world, player_pos) = save::load_or_create(&paths.save_dir, &mut registry, seed)?;
+    let (world, player_pos, inventory) =
+        save::load_or_create(&paths.save_dir, &mut registry, seed)?;
 
     app.insert_resource(paths)
         .insert_resource(content)
         .insert_resource(voxel::Blocks(Arc::new(registry)))
         .insert_resource(voxel::GameWorld(world))
+        .insert_resource(interaction::Inventory(inventory))
         .insert_resource(scripting::Scripts(load_scripts(&mods)))
         .add_plugins((
             voxel::VoxelPlugin,
