@@ -7,6 +7,7 @@ pub mod atlas;
 pub mod chunk;
 pub mod coords;
 pub mod generation;
+pub mod inventory;
 pub mod meshing;
 pub mod persistence;
 pub mod physics;
