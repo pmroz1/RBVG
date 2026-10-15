@@ -5,8 +5,11 @@
 //! `mod` and `depth + 1`. Those events are *not* run recursively: they are queued and
 //! dispatched together in the next wave, after the current wave's commands were all
 //! applied, so handlers always see a consistent world. Waves repeat until the queue is
-//! empty or a limit is hit; leftovers are dropped and counted (never deferred, so a
-//! cascade cannot outlive the frame).
+//! empty or a limit is hit. Events over the depth limit are dropped (that is what stops
+//! feedback loops). Events over the per-pump event limit are *deferred*: returned in
+//! [`PumpStats::deferred`], at most [`PumpLimits::max_deferred`], with their depth
+//! unchanged, for the caller to pass into its next pump (the client: next frame). Anything
+//! beyond that, and commands over the command limit, is dropped and counted.
 
 use crate::events::{Envelope, EventOrigin, ScriptCommand, ScriptEvent};
 use crate::host::ScriptHost;
@@ -28,6 +31,8 @@ pub struct PumpLimits {
     pub max_events: usize,
     /// Maximum script commands applied per pump call.
     pub max_commands: usize,
+    /// Maximum events carried over to the next pump once `max_events` is reached.
+    pub max_deferred: usize,
 }
 
 impl Default for PumpLimits {
@@ -36,17 +41,20 @@ impl Default for PumpLimits {
             max_depth: 8,
             max_events: 256,
             max_commands: 1024,
+            max_deferred: 256,
         }
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct PumpStats {
     pub events: usize,
     pub commands: usize,
     pub waves: u32,
-    /// Events dropped by the depth or event limits.
+    /// Events dropped by the depth limit or because the deferral queue was full.
     pub dropped_events: usize,
+    /// Events over the event limit, oldest first, to pass into the next pump.
+    pub deferred: Vec<Envelope>,
     /// Commands dropped by the command limit.
     pub dropped_commands: usize,
     pub errors: usize,
@@ -70,8 +78,16 @@ pub fn pump(
         stats.waves += 1;
         let mut pending = Vec::new();
         for env in wave {
-            if env.depth > limits.max_depth || stats.events >= limits.max_events {
+            if env.depth > limits.max_depth {
                 stats.dropped_events += 1;
+                continue;
+            }
+            if stats.events >= limits.max_events {
+                if stats.deferred.len() < limits.max_deferred {
+                    stats.deferred.push(env);
+                } else {
+                    stats.dropped_events += 1;
+                }
                 continue;
             }
             stats.events += 1;
@@ -93,6 +109,12 @@ pub fn pump(
             dropped_events = stats.dropped_events,
             dropped_commands = stats.dropped_commands,
             "script event cascade hit its limits and was truncated"
+        );
+    }
+    if !stats.deferred.is_empty() {
+        tracing::debug!(
+            deferred = stats.deferred.len(),
+            "script event limit reached; deferring the rest"
         );
     }
     stats

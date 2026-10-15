@@ -7,7 +7,8 @@
 //! in the same frame, and are visible to every later system. Scripts read the world as
 //! it was when the dispatch/tick started. Script-made edits raise `block_placed`/`block_broken`
 //! events with origin `mod`; they are dispatched in later waves by `rbvg_scripting::pump`,
-//! bounded by depth and event limits (see docs/SCRIPTING_API.md).
+//! bounded by depth and event limits (see docs/SCRIPTING_API.md). Events over the per-pump
+//! event limit wait in [`DeferredEvents`] and are dispatched first in the next frame.
 
 use std::time::Duration;
 
@@ -35,6 +36,14 @@ pub struct ScriptStats {
     pub errors: usize,
 }
 
+/// Deferred events awaiting the next frame and the snapshot being dispatched this frame.
+/// Bounded per pump by `PumpLimits::max_deferred`; cleared when another world is loaded.
+#[derive(Resource, Default)]
+pub struct DeferredEvents {
+    pub pending: Vec<Envelope>,
+    pub ready: Vec<Envelope>,
+}
+
 /// A script asked to show this message (`ui.notify`).
 #[derive(Message, Debug, Clone)]
 pub struct Notification(pub String);
@@ -48,15 +57,24 @@ pub struct InteractRequest {
 
 pub struct ScriptingPlugin;
 
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ScriptingSystems;
+
 impl Plugin for ScriptingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ScriptStats>()
+            .init_resource::<DeferredEvents>()
             .add_message::<Notification>()
             .add_message::<InteractRequest>()
             .add_systems(
                 Update,
+                snapshot_deferred_events.before(crate::interaction::InteractionSystems),
+            )
+            .add_systems(
+                Update,
                 (dispatch_player_events, tick_scheduler)
                     .chain()
+                    .in_set(ScriptingSystems)
                     .after(crate::interaction::InteractionSystems),
             );
     }
@@ -95,6 +113,13 @@ impl CommandApplier for ClientApplier<'_> {
                     warn!(mod_id, "world.set_block: unknown block `{block}`");
                     return None;
                 };
+                if id != BlockId::AIR && !self.blocks.0.is_solid(id) {
+                    warn!(
+                        mod_id,
+                        "world.set_block: non-solid block `{block}` is unavailable"
+                    );
+                    return None;
+                }
                 // Same rule as player placement: never put a solid block inside the player.
                 if self.blocks.0.is_solid(id) && self.player.intersects(|p| p == pos) {
                     warn!(mod_id, "world.set_block: {pos:?} is occupied by the player");
@@ -124,6 +149,10 @@ impl CommandApplier for ClientApplier<'_> {
     }
 }
 
+fn snapshot_deferred_events(mut deferred: ResMut<DeferredEvents>) {
+    deferred.ready = std::mem::take(&mut deferred.pending);
+}
+
 /// Runs `events`/`commands` through the bounded pump and returns the notifications.
 #[allow(clippy::too_many_arguments)]
 pub fn run_pump(
@@ -132,6 +161,7 @@ pub fn run_pump(
     world: &mut GameWorld,
     player: Aabb,
     stats: &mut ScriptStats,
+    deferred: &mut DeferredEvents,
     events: Vec<Envelope>,
     commands: Vec<ScriptCommand>,
 ) -> Vec<Notification> {
@@ -151,6 +181,7 @@ pub fn run_pump(
     );
     stats.last_dispatch = started.elapsed();
     stats.errors += s.errors;
+    deferred.pending.extend(s.deferred);
     applier.notes.into_iter().map(Notification).collect()
 }
 
@@ -161,10 +192,12 @@ fn dispatch_player_events(
     blocks: Res<Blocks>,
     mut world: ResMut<GameWorld>,
     mut stats: ResMut<ScriptStats>,
+    mut deferred: ResMut<DeferredEvents>,
     mut notes: MessageWriter<Notification>,
     player: Single<&Transform, With<Player>>,
 ) {
-    let mut events = Vec::new();
+    // Older, deferred events go first.
+    let mut events = std::mem::take(&mut deferred.ready);
     for change in changes.read() {
         events.push(Envelope::player(if change.new == BlockId::AIR {
             ScriptEvent::BlockBroken {
@@ -191,6 +224,7 @@ fn dispatch_player_events(
     if events.is_empty() {
         return;
     }
+    let mut current_frame_deferred = std::mem::take(&mut deferred.pending);
     let aabb = Player::aabb(player.translation);
     for n in run_pump(
         &scripts,
@@ -198,11 +232,13 @@ fn dispatch_player_events(
         &mut world,
         aabb,
         &mut stats,
+        &mut deferred,
         events,
         vec![],
     ) {
         notes.write(n);
     }
+    deferred.pending.append(&mut current_frame_deferred);
 }
 
 fn tick_scheduler(
@@ -211,6 +247,7 @@ fn tick_scheduler(
     blocks: Res<Blocks>,
     mut world: ResMut<GameWorld>,
     mut stats: ResMut<ScriptStats>,
+    mut deferred: ResMut<DeferredEvents>,
     mut notes: MessageWriter<Notification>,
     player: Single<&Transform, With<Player>>,
 ) {
@@ -236,9 +273,56 @@ fn tick_scheduler(
         &mut world,
         aabb,
         &mut stats,
+        &mut deferred,
         vec![],
         commands,
     ) {
         notes.write(n);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use rbvg_voxel::physics::Aabb;
+    use rbvg_voxel::{TerrainGenerator, VoxelWorld};
+
+    #[test]
+    fn script_commands_cannot_place_non_solid_blocks() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut registry = crate::load_content(&root).unwrap();
+        registry
+            .load_toml(
+                "test",
+                "format_version = 1\n[[blocks]]\nid = \"test:glass\"\n\
+                 display_name = \"Glass\"\nsolid = false\ncolor = [0.5, 0.5, 0.5]",
+            )
+            .unwrap();
+        let pos = BlockPos::new(1, 1, 1);
+        let mut world = GameWorld(VoxelWorld::new(
+            7,
+            Arc::new(TerrainGenerator::new(7, &registry).unwrap()),
+        ));
+        world.0.load_chunk(pos.chunk());
+        let original = world.0.get_block(pos);
+        let blocks = Blocks(Arc::new(registry));
+        let mut applier = ClientApplier {
+            blocks: &blocks,
+            world: &mut world,
+            player: Aabb::from_feet([100.0; 3], 0.3, 1.8),
+            notes: Vec::new(),
+        };
+
+        assert_eq!(
+            applier.apply(ScriptCommand::SetBlock {
+                mod_id: "test".into(),
+                pos,
+                block: "test:glass".into(),
+            }),
+            None
+        );
+        assert_eq!(applier.world.0.get_block(pos), original);
     }
 }

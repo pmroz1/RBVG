@@ -127,10 +127,14 @@ be generated in any order and on any thread, and only edits need saving.
 - `meshing::mesh_snapshot` emits one quad per block face whose neighbour is not solid,
   looking across chunk borders through the snapshot's border layers (unloaded neighbours
   count as air). `mesh_chunk` (capture + mesh) remains for synchronous use and tests.
-- Output is per-vertex block ids; the client maps them to colours. Swapping in a greedy
-  mesher or a texture-array material only changes this function / the client mapping.
+- Output is per-vertex block ids plus face-local UVs (upright on side faces, not mirrored).
+  Swapping in a greedy mesher only changes this function / the client mapping.
+- `atlas::BlockAtlas` builds one 16×16 tile per registered block (1-texel replicated
+  border, plus a checkerboard fallback) from content colours and ids, deterministically and
+  without image assets. Missing-content placeholders get the magenta/black checkerboard.
 - The client keeps one entity per non-empty chunk with a single shared
-  `StandardMaterial` (vertex colours).
+  `StandardMaterial` whose base colour texture is the atlas (nearest sampling). When the
+  registry changes (F9) the atlas image is replaced in place before the full remesh.
 
 ## Frame flow (client)
 
@@ -179,6 +183,22 @@ See [SCRIPTING_API.md](SCRIPTING_API.md) for the API. Structure:
 chunks only, with a block-name palette so runtime ids can change between sessions). Files
 are written to a temp file, fsynced and renamed. See `rbvg_voxel::persistence` for the
 byte layout.
+
+Startup and F9 explicitly use `LoadPolicy::PreserveMissing`. Unknown names become solid
+magenta, non-placeable placeholders in a **world-scoped registry snapshot**, not installed
+content. Loading is staged and commits only after validation; invalid versions, malformed
+palettes, duplicate chunks, truncation and partial saves fail rather than starting a world
+that might overwrite the save. Saving writes only referenced names, preserving unknown
+blocks under schema v1. Reinstalling content before startup restores its real definition.
+F9 rebuilds from installed content, remaps hotbar names and resets async work and timers.
+Each file is atomic individually; the pair is not a crash-atomic transaction.
+
+## Creative selection
+
+`rbvg_voxel::selection` owns the nine-slot selection and registry validation. The client
+provides a keyboard-scrollable B panel, sorted by persistent ID, with readable names and
+missing-content labels. Enter assigns the highlighted definition to the selected 1–9
+slot. This is creative selection only, not a survival inventory or an item registry.
 
 ## Multiplayer readiness
 

@@ -53,11 +53,20 @@ pub struct PlayerPlugin {
 #[derive(Resource)]
 struct SpawnPoint(Option<Vec3>);
 
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PlayerSystems;
+
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(SpawnPoint(self.spawn))
             .add_systems(Startup, spawn_player)
-            .add_systems(Update, (grab_cursor, look, move_player).chain());
+            .add_systems(
+                Update,
+                (grab_cursor, look, move_player)
+                    .chain()
+                    .in_set(PlayerSystems)
+                    .before(crate::interaction::InteractionSystems),
+            );
     }
 }
 
@@ -98,8 +107,9 @@ fn grab_cursor(
     mut cursor: Single<&mut CursorOptions>,
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
+    menu: Res<crate::interaction::CreativeMenu>,
 ) {
-    if mouse.just_pressed(MouseButton::Left) && !cursor_captured(&cursor) {
+    if !menu.open && mouse.just_pressed(MouseButton::Left) && !cursor_captured(&cursor) {
         cursor.visible = false;
         cursor.grab_mode = CursorGrabMode::Locked;
     }

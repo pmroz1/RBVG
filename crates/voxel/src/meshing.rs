@@ -96,6 +96,9 @@ impl ChunkSnapshot {
 pub struct ChunkMesh {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
+    /// Face-local texture coordinates in `0..=1`; `v` grows downwards (image convention),
+    /// so side faces are upright. Map into an atlas tile with [`crate::atlas::BlockAtlas`].
+    pub uvs: Vec<[f32; 2]>,
     /// Per-vertex block id, so the client can resolve colours/materials.
     pub blocks: Vec<BlockId>,
     pub indices: Vec<u32>,
@@ -105,6 +108,7 @@ impl ChunkMesh {
     pub fn clear(&mut self) {
         self.positions.clear();
         self.normals.clear();
+        self.uvs.clear();
         self.blocks.clear();
         self.indices.clear();
     }
@@ -123,6 +127,8 @@ struct Face {
     normal: [f32; 3],
     /// Unit-cube corners, counter-clockwise when viewed from outside.
     corners: [[f32; 3]; 4],
+    /// Texture coordinates of `corners`, upright on side faces.
+    uvs: [[f32; 2]; 4],
 }
 
 const FACES: [Face; 6] = [
@@ -130,31 +136,37 @@ const FACES: [Face; 6] = [
         dir: (1, 0, 0),
         normal: [1.0, 0.0, 0.0],
         corners: [[1., 0., 0.], [1., 1., 0.], [1., 1., 1.], [1., 0., 1.]],
+        uvs: [[1., 1.], [1., 0.], [0., 0.], [0., 1.]],
     },
     Face {
         dir: (-1, 0, 0),
         normal: [-1.0, 0.0, 0.0],
         corners: [[0., 0., 1.], [0., 1., 1.], [0., 1., 0.], [0., 0., 0.]],
+        uvs: [[1., 1.], [1., 0.], [0., 0.], [0., 1.]],
     },
     Face {
         dir: (0, 1, 0),
         normal: [0.0, 1.0, 0.0],
         corners: [[0., 1., 0.], [0., 1., 1.], [1., 1., 1.], [1., 1., 0.]],
+        uvs: [[0., 0.], [0., 1.], [1., 1.], [1., 0.]],
     },
     Face {
         dir: (0, -1, 0),
         normal: [0.0, -1.0, 0.0],
         corners: [[0., 0., 0.], [1., 0., 0.], [1., 0., 1.], [0., 0., 1.]],
+        uvs: [[1., 0.], [0., 0.], [0., 1.], [1., 1.]],
     },
     Face {
         dir: (0, 0, 1),
         normal: [0.0, 0.0, 1.0],
         corners: [[0., 0., 1.], [1., 0., 1.], [1., 1., 1.], [0., 1., 1.]],
+        uvs: [[0., 1.], [1., 1.], [1., 0.], [0., 0.]],
     },
     Face {
         dir: (0, 0, -1),
         normal: [0.0, 0.0, -1.0],
         corners: [[1., 0., 0.], [0., 0., 0.], [0., 1., 0.], [1., 1., 0.]],
+        uvs: [[0., 1.], [1., 1.], [1., 0.], [0., 0.]],
     },
 ];
 
@@ -191,10 +203,11 @@ pub fn mesh_snapshot(snap: &ChunkSnapshot, registry: &BlockRegistry, out: &mut C
                         continue;
                     }
                     let base = out.positions.len() as u32;
-                    for c in face.corners {
+                    for (c, uv) in face.corners.iter().zip(face.uvs) {
                         out.positions
                             .push([c[0] + x as f32, c[1] + y as f32, c[2] + z as f32]);
                         out.normals.push(face.normal);
+                        out.uvs.push(uv);
                         out.blocks.push(id);
                     }
                     out.indices.extend_from_slice(&[
@@ -225,6 +238,7 @@ mod tests {
             display_name: "Stone".into(),
             solid: true,
             color: [0.5; 3],
+            missing: false,
         })
         .unwrap();
         r
@@ -246,6 +260,27 @@ mod tests {
     }
 
     #[test]
+    fn side_textures_are_upright_and_not_mirrored() {
+        for f in &FACES {
+            let n = f.normal;
+            for (c, uv) in f.corners.iter().zip(f.uvs) {
+                if n[1] == 0.0 {
+                    // Seen from outside: v points down, u points right (= -normal × up).
+                    assert_eq!(uv[1], 1.0 - c[1], "{n:?}");
+                    let right = [n[2], 0.0, -n[0]];
+                    let along = right[0] * c[0] + right[2] * c[2];
+                    let offset = if right[0] + right[2] < 0.0 { 1.0 } else { 0.0 };
+                    assert_eq!(uv[0], along + offset, "{n:?}");
+                } else {
+                    // North (-z) is up on both; the bottom is seen from below, so x flips.
+                    let u = if n[1] > 0.0 { c[0] } else { 1.0 - c[0] };
+                    assert_eq!(uv, [u, c[2]], "{n:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn single_block_has_six_faces() {
         let mut w = flat_world(1);
         let reg = registry();
@@ -254,6 +289,7 @@ mod tests {
         mesh_chunk(&w, &reg, ChunkPos::new(0, 0, 0), &mut m);
         assert_eq!(m.face_count(), 6);
         assert_eq!(m.positions.len(), 24);
+        assert_eq!(m.uvs.len(), 24);
     }
 
     #[test]

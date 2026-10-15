@@ -4,7 +4,7 @@ use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use rbvg_voxel::streaming::LatencyStats;
 
-use crate::interaction::{Hotbar, Target};
+use crate::interaction::{CreativeMenu, Hotbar, Target};
 use crate::player::Player;
 use crate::scripting::{Notification, ScriptStats};
 use crate::voxel::{Blocks, ChunkRender, GameWorld, Pipeline};
@@ -14,6 +14,9 @@ struct DebugText;
 
 #[derive(Component)]
 struct HotbarText;
+
+#[derive(Component)]
+struct CreativeText;
 
 /// Script notification line; hidden when the timer runs out.
 #[derive(Component)]
@@ -25,12 +28,30 @@ pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_hud)
-            .add_systems(Update, (update_debug, update_hotbar, update_notice));
+        app.add_systems(Startup, spawn_hud).add_systems(
+            Update,
+            (update_debug, update_hotbar, update_notice, update_creative)
+                .after(crate::scripting::ScriptingSystems),
+        );
     }
 }
 
 fn spawn_hud(mut commands: Commands) {
+    commands.spawn((
+        CreativeText,
+        Text::default(),
+        TextFont::from_font_size(18.0),
+        BackgroundColor(Color::srgba(0.02, 0.02, 0.04, 0.95)),
+        Node {
+            position_type: PositionType::Absolute,
+            left: percent(20),
+            top: percent(25),
+            padding: UiRect::all(px(16)),
+            ..default()
+        },
+        Visibility::Hidden,
+        ZIndex(10),
+    ));
     commands.spawn((
         Text::new("+"),
         TextFont::from_font_size(24.0),
@@ -137,7 +158,7 @@ fn update_debug(
          ms avg/p95/max: gen {}  mesh {}  apply {}\n\
          script dispatch {:.3} ms  scheduler {:.3} ms ({} pending)  script errors {}\n\
          target {target}\n\
-         [click] capture mouse  [Esc] release  [E] interact  [F5] save  [F9] load",
+         [click] capture mouse  [Esc] release  [B] creative  [E] interact  [F5] save  [F9] load",
         pos.x,
         pos.y,
         pos.z,
@@ -168,7 +189,7 @@ fn update_hotbar(
     blocks: Res<Blocks>,
     mut text: Single<&mut Text, With<HotbarText>>,
 ) {
-    if !hotbar.is_changed() {
+    if !hotbar.is_changed() && !blocks.is_changed() {
         return;
     }
     text.0 = hotbar
@@ -176,7 +197,11 @@ fn update_hotbar(
         .iter()
         .enumerate()
         .map(|(i, id)| {
-            let name = blocks.0.get(*id).map_or("?", |d| d.display_name.as_str());
+            let name = if *id == rbvg_voxel::BlockId::AIR {
+                "Empty"
+            } else {
+                blocks.0.get(*id).map_or("?", |d| d.display_name.as_str())
+            };
             if i == hotbar.selected {
                 format!("[{} {name}]", i + 1)
             } else {
@@ -185,6 +210,50 @@ fn update_hotbar(
         })
         .collect::<Vec<_>>()
         .join(" ");
+}
+
+fn update_creative(
+    menu: Res<CreativeMenu>,
+    hotbar: Res<Hotbar>,
+    blocks: Res<Blocks>,
+    mut panel: Single<(&mut Text, &mut Visibility), With<CreativeText>>,
+) {
+    if !menu.is_changed() && !hotbar.is_changed() && !blocks.is_changed() {
+        return;
+    }
+    let (text, visibility) = &mut *panel;
+    **visibility = if menu.open {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    if !menu.open {
+        return;
+    }
+    let entries = rbvg_voxel::selection::catalog(&blocks.0);
+    text.0 = format!(
+        "Creative blocks — slot {}\n\
+             ↑/↓ scroll · PgUp/PgDn page · 1–9 slot · Enter assign · B/Esc close\n",
+        hotbar.selected + 1,
+    );
+    let start = menu.index / 12 * 12;
+    for (i, (_, def)) in entries.iter().enumerate().skip(start).take(12) {
+        text.0.push_str(&format!(
+            "\n{} {} ({}){}",
+            if i == menu.index { ">" } else { " " },
+            def.display_name,
+            def.id,
+            if def.missing {
+                " — MISSING, unavailable"
+            } else if !def.solid {
+                " — unavailable"
+            } else {
+                ""
+            },
+        ));
+    }
+    text.0
+        .push_str(&format!("\n\n{} registered blocks", entries.len()));
 }
 
 fn update_notice(

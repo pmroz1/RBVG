@@ -3,6 +3,7 @@
 //! Nothing in this crate depends on Bevy, so the simulation can run headless
 //! (tests, a future dedicated server) and the client only consumes its output.
 
+pub mod atlas;
 pub mod chunk;
 pub mod coords;
 pub mod generation;
@@ -11,6 +12,7 @@ pub mod persistence;
 pub mod physics;
 pub mod raycast;
 pub mod registry;
+pub mod selection;
 pub mod streaming;
 pub mod world;
 

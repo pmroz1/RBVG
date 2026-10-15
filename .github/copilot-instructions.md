@@ -27,6 +27,10 @@ into a platform. Keep that vision in every change.
   async result against tickets and chunk revisions before applying. Never block on a task
   in a frame system.
 - Keep rendering out of gameplay logic; the client only translates data to Bevy.
+- Creative catalog/slot validation stays in `rbvg_voxel::selection`; never hardcode a mod
+  block or assume the first nine registry entries are all content.
+- Startup and F9 use `LoadPolicy::PreserveMissing` against a staged world registry.
+  Keep installed content separate, preserve unknown names, and reject corrupt/partial saves.
 
 ## Scripting rules
 

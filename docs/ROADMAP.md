@@ -22,7 +22,8 @@ Status legend: ✅ done · 🟡 partial · ⬜ not started
 Known Phase 1 limitations (still open unless noted):
 
 - ~~Generation and meshing run on the main thread with per-frame caps.~~ Done in Phase 2.
-- No textures, transparency or lighting beyond one directional light; blocks use colours.
+- ~~No textures~~ (generated atlas since Phase 3.7); no transparency or lighting beyond one
+  directional light.
 - One fixed save slot (`saves/world`); saving writes the whole palette and all edited chunks.
 - ~~Scripts cannot read the world yet.~~ Done in Phase 2.
 - No mod dependency resolution; mods load in id order.
@@ -43,7 +44,8 @@ were run for Phase 2).
 
 Remaining Phase 2 items:
 
-3. Block texture array + transparent material path (separate opaque/transparent meshes).
+3. ~~Block textures~~ (generated padded atlas, 3.7); transparent material path (separate
+   opaque/transparent meshes) and authored texture files remain.
 4. Greedy meshing, mesh buffer pooling, frustum-aware load priority.
 5. Biome registry and generator stages (height → surface → caves → ores → features).
 6. Item registry, inventory, drops, hotbar backed by inventory.
@@ -73,10 +75,21 @@ Done: events with origin/depth, `before_block_break` cancellation, `interact` (E
 event pump, `ui.notify`, mod dependencies and resolution, mod block files, missing-content
 placeholders, `ancient_shrine` mod with headless end-to-end test.
 
-**Not done / unverified:** textured rendering (3.1: no texture atlas, blocks still use
-flat colours), mod version ranges, extended benchmarks, greedy meshing. No interactive or
-graphical gameplay test was performed (no display); the 3.0 checklist below is for a human:
+**Not done / unverified:** mod version ranges, greedy meshing, authored texture files,
+real-GPU performance. Rendering was only checked on llvmpipe under Xvfb (textured terrain
+and the creative panel opened by a synthetic X key event); the checklist below and the
+README's manual procedure are for a human on real hardware:
 cross chunk borders while moving fast; break/place at chunk borders while meshes update;
 F5 during streaming then F9; wait for regrowth / replace the block first; walk away and
-return while timers pend; place `ancient_shrine:altar` (not in hotbar yet unless it is
-among the first 9 solid blocks), press E, expect the message and glow ring after 3 s.
+return while timers pend; open B, assign `ancient_shrine:altar` to a hotbar slot, place it,
+press E, expect the message and glow ring after 3 s.
+
+### Completion milestones
+
+| Milestone | Status | Notes |
+|---|---|---|
+| 3.6 Reliability | ✅ | Creative catalog; staged, lossless load policy; F9 drops old-world work (tested) |
+| 3.7 Textures | ✅ | Generated padded atlas (`rbvg_voxel::atlas`), upright UVs, one shared material |
+| 3.8 Gameplay validation | ✅ | Synthetic keyboard/mouse tests (creative, place/break/cancel, F5/F9); llvmpipe run |
+| 3.9 Event reliability | ✅ | Bounded deferral (D25); rejected commands logged per mod; per-mod handler isolation |
+| 3.10 Release quality | 🟡 | fmt/clippy/tests green; `stream_bench` run; real-GPU FPS not measured |

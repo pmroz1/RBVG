@@ -103,7 +103,8 @@ Script edits now raise events with origin `mod` and depth+1, dispatched in later
 `rbvg_scripting::pump` (depth 8 / 256 events / 1024 commands per pump, excess dropped and
 logged). *Why:* cross-mod reactions without recursion or unbounded cascades. The engine
 side implements `CommandApplier`, keeping the pump Bevy-free and testable headless.
-*Trade-off:* dropped events are lost, not deferred.
+*Trade-off:* dropped events are lost, not deferred. (Events over the event limit are now
+deferred, see D25.)
 
 ## D20 — Missing mod content becomes placeholders
 Unknown palette names in a save register as solid "Missing" blocks so they round-trip
@@ -115,3 +116,33 @@ save is read.
 is combined across handlers in deterministic mod order. Other events are notifications
 and cannot be cancelled. *Why:* mods can protect blocks without coupling gameplay to
 rendering. Commands remain queued and are applied after dispatch, even when cancelled.
+
+## D22 — Creative catalog, not survival inventory
+Keep nine slots, with a keyboard-scrollable, alphabetically sorted content catalog and
+explicit slot assignment. Selection/validation lives in the voxel library; Bevy only
+renders the panel and translates keys. Missing definitions are visible but unavailable
+for new placement. *Why:* all mod content is reachable without hardcoded IDs or item,
+stacking and crafting systems.
+
+## D23 — World-scoped missing content, explicit load policy
+Startup and F9 use `PreserveMissing`; strict loading remains available to library callers.
+Stage registry and chunks before replacing the world; keep the installed content registry
+separate. Save only palette names actually referenced by edited chunks, retaining unknown
+names exactly. *Why:* disabling/reinstalling a mod must not lose blocks or leave obsolete
+placeholders in global content. Schema stays v1. *Limit:* the two save files are separately
+atomic, not jointly crash-atomic; a future durable-save revision needs a generation manifest.
+
+## D24 — Generated padded atlas instead of image assets
+Each block gets a deterministic 16×16 tile derived from its colour and id, packed into one
+square atlas with a 1-texel replicated border, used by one shared material with nearest
+sampling. *Why:* textured, upright faces for all content (including mod blocks) without
+shipping or licensing images, and no per-block materials. *Limit:* no authored textures,
+mipmaps, per-face textures or transparency yet; a later `texture = "..."` field in block
+files can fill the same tiles.
+
+## D25 — Bounded deferral of script events
+Events over the per-pump event limit (256) are carried over, in order and with their depth,
+up to 256 per pump, and dispatched first in the next frame. Depth overruns and command
+overruns are still dropped and logged. Loading another world clears the backlog. *Why:* a
+burst of legitimate events (e.g. a large ritual) is not silently lost, while the depth
+limit still ends feedback loops and the per-frame cost stays bounded.

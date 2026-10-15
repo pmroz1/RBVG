@@ -59,9 +59,16 @@ cargo run --release -p rbvg_voxel --example stream_bench   # headless gen+mesh b
 | Space | Jump |
 | Left / right click | Break / place block |
 | 1–9 | Select hotbar slot |
+| B | Open/close creative block selection (releases mouse) |
+| Up / Down, Page Up / Down | Browse every registered block while creative selection is open |
+| Enter | Assign highlighted block to the selected hotbar slot |
+| E | Interact with the targeted block (mods decide the behavior) |
 | F5 / F9 | Save / reload `saves/world` |
 
 The save in `saves/world` is loaded automatically at startup. Delete it to start a new world.
+Creative selection lists block names and persistent IDs in alphabetical order, including mod
+content. Missing-content entries are visibly marked and cannot be newly placed. Close the
+panel and click to recapture the mouse; there are still exactly nine hotbar slots.
 
 ## Repository layout
 
@@ -83,3 +90,29 @@ docs/             architecture, roadmap, scripting API, decision log
 - [Decision log](docs/DECISIONS.md)
 
 All content in this repository is original placeholder content.
+
+## Manual gameplay procedure
+
+Use a fresh save (move the old directory aside; do not overwrite it). Keep a copy of a
+save with mod blocks for the missing-content test.
+
+1. Spawn, click to capture, look around, walk across two chunk borders, sprint and jump.
+   Check landing/collision and that unloaded terrain cannot be entered as empty space.
+2. Break several blocks; place grass, dirt, stone and wood, including at a chunk border.
+   Rapidly edit the same spot, walk away and return: no stale faces or missing neighbors.
+3. Open B, browse beyond nine definitions, choose a slot with 1–9 and assign with Enter.
+   Close B, recapture, place `ancient_shrine:altar`; target it and press E.
+4. Expect “The ancient shrine awakens...”, then the glowstone ring and second message
+   after three simulation seconds. Check updated meshes and observer-mod event logs.
+5. With a protection mod, attempt a cancelled break: the block stays and no
+   `block_broken` notification is emitted. Other listeners must still run.
+6. F5 while streaming; move/edit, F9, confirm saved feet position and edited blocks.
+   Timers and old-world background results must not modify the restored world.
+7. Exit, disable a content mod, load/save: missing blocks remain visible and named.
+   Reinstall and restart: the original definitions return. A corrupt/partial save must
+   report an error, not start a new world over it.
+8. Check texture faces upright, illumination across borders, target outline, UI text,
+   Escape/re-capture, window focus loss and mouse capture on your actual OS/GPU.
+
+Synthetic input tests cannot certify native cursor lock, focus, display scaling or GPU
+driver behavior. Software-renderer results are not representative GPU FPS measurements.
