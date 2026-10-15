@@ -867,4 +867,97 @@ mod tests {
         assert_eq!(inv(&mut app).count(gone), 3);
         assert_eq!(inv(&mut app).count(creative), 0);
     }
+
+    #[test]
+    fn survival_mining_checks_script_replacements_against_inventory_capacity() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let registry = crate::load_content(&root).unwrap();
+        let [stone, wood, dirt] =
+            ["core:stone", "core:wood", "core:dirt"].map(|n| registry.id(n).unwrap());
+        let manifest = ModManifest::load(&root.join("mods/ancient_shrine")).unwrap();
+        let mut host = ScriptHost::new(ScriptHostConfig::default());
+        host.load_mod_source(
+            &manifest,
+            r#"
+            events.subscribe("before_block_break", function(e)
+                if e.block == "core:stone" then
+                    world.set_block(e.position, "core:wood")
+                end
+            end)
+            "#,
+        )
+        .unwrap();
+        let ground = BlockPos::new(0, 195, 0);
+        let mut world = VoxelWorld::new(7, Arc::new(TerrainGenerator::new(7, &registry).unwrap()));
+        world.load_chunk(ground.chunk());
+        world.set_block(ground, stone).unwrap();
+        let mut app = App::new();
+        app.insert_resource(GameWorld(world))
+            .insert_resource(Hotbar(BlockSelection::new(&registry)))
+            .insert_resource(Blocks(Arc::new(registry)))
+            .insert_resource(Scripts(host))
+            .insert_resource(InteractionSettings { reach: 6.0 })
+            .insert_resource(GameMode::Survival)
+            .init_resource::<Inventory>()
+            .init_resource::<Target>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .insert_resource(Time::<()>::default())
+            .add_message::<BlockChanged>()
+            .add_plugins(ScriptingPlugin)
+            .add_systems(
+                Update,
+                (update_target, edit_blocks)
+                    .chain()
+                    .in_set(InteractionSystems),
+            );
+        app.world_mut().spawn(CursorOptions {
+            grab_mode: bevy::window::CursorGrabMode::Locked,
+            ..default()
+        });
+        app.world_mut().spawn((
+            Player::default(),
+            Transform::from_xyz(0.5, 200.5, 0.5).looking_to(Vec3::NEG_Y, Vec3::Z),
+        ));
+        app.update();
+        let click = |app: &mut App| {
+            let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            mouse.reset_all();
+            mouse.press(MouseButton::Left);
+            app.update();
+            app.world_mut()
+                .resource_mut::<Messages<Notification>>()
+                .drain()
+                .map(|n| n.0)
+                .collect::<Vec<_>>()
+        };
+        let block = |app: &App| app.world().resource::<GameWorld>().0.get_block(ground);
+        let registry = app.world().resource::<Blocks>().0.clone();
+        let full_inventory = {
+            let mut inventory = app.world_mut().resource_mut::<Inventory>();
+            for _ in 0..8 {
+                inventory.add(dirt, 64, &registry).unwrap();
+            }
+            inventory.add(stone, 63, &registry).unwrap();
+            inventory.0.clone()
+        };
+
+        assert_eq!(click(&mut app), ["Inventory full"]);
+        assert_eq!(block(&app), wood);
+        assert_eq!(app.world().resource::<Inventory>().0, full_inventory);
+
+        app.world_mut()
+            .resource_mut::<Inventory>()
+            .remove(0, 64)
+            .unwrap();
+        app.world_mut()
+            .resource_mut::<GameWorld>()
+            .0
+            .set_block(ground, stone)
+            .unwrap();
+        assert!(click(&mut app).is_empty());
+        assert_eq!(block(&app), BlockId::AIR);
+        let inventory = &app.world().resource::<Inventory>().0;
+        assert_eq!(inventory.count(wood), 1);
+        assert_eq!(inventory.count(stone), 63);
+    }
 }
