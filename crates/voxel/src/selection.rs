@@ -16,7 +16,7 @@ impl BlockSelection {
         for (slot, (id, _)) in slots.iter_mut().zip(
             catalog(registry)
                 .into_iter()
-                .filter(|(_, def)| !def.missing),
+                .filter(|(_, def)| def.solid && !def.missing),
         ) {
             *slot = id;
         }
@@ -30,11 +30,11 @@ impl BlockSelection {
             .filter(|id| *id != BlockId::AIR)
     }
 
-    /// Missing-content placeholders are visible, but cannot be newly placed.
+    /// Unavailable blocks stay visible in the catalog, but cannot be placed.
     pub fn assign(&mut self, slot: usize, id: BlockId, registry: &BlockRegistry) -> bool {
         if slot >= HOTBAR_SLOTS
             || id == BlockId::AIR
-            || registry.get(id).is_none_or(|def| def.missing)
+            || registry.get(id).is_none_or(|def| def.missing || !def.solid)
         {
             return false;
         }
@@ -71,15 +71,26 @@ mod tests {
                 )
                 .unwrap();
         }
+        registry
+            .load_toml(
+                "test",
+                "format_version = 1\n[[blocks]]\nid = \"test:glass\"\n\
+                 display_name = \"Glass\"\nsolid = false\ncolor = [0.5, 0.5, 0.5]",
+            )
+            .unwrap();
         let mut selection = BlockSelection::new(&registry);
         let entries = catalog(&registry);
-        assert_eq!(entries.len(), 20);
+        let glass = registry.id("test:glass").unwrap();
+        assert_eq!(entries.len(), 21);
+        assert!(entries.iter().any(|(id, _)| *id == glass));
+        assert!(!selection.slots.contains(&glass));
         assert_eq!(registry.name(selection.slots[0]), "test:block_00");
         let last = registry.id("test:block_19").unwrap();
         assert!(selection.assign(8, last, &registry));
         selection.selected = 8;
         assert_eq!(selection.current(), Some(last));
         assert_eq!(selection.slots.len(), 9);
+        assert!(!selection.assign(8, glass, &registry));
         let missing = registry.register_missing("removed:block").unwrap();
         assert!(
             catalog(&registry)

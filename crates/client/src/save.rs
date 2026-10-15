@@ -141,7 +141,8 @@ fn save_or_load(
                 scripts.0.clear_scheduled();
                 changes.clear();
                 interactions.clear();
-                deferred.0.clear();
+                deferred.pending.clear();
+                deferred.ready.clear();
                 target.0 = None;
                 for (_, e) in entities.0.drain() {
                     commands.entity(e).despawn();
@@ -237,12 +238,20 @@ mod tests {
         })))
         .add_message::<BlockChanged>()
         .add_message::<InteractRequest>()
-        .insert_resource(DeferredEvents(vec![rbvg_scripting::Envelope::player(
-            rbvg_scripting::ScriptEvent::BlockBroken {
-                pos: POS,
-                block: "core:stone".into(),
-            },
-        )]))
+        .insert_resource(DeferredEvents {
+            pending: vec![rbvg_scripting::Envelope::player(
+                rbvg_scripting::ScriptEvent::BlockBroken {
+                    pos: POS,
+                    block: "core:stone".into(),
+                },
+            )],
+            ready: vec![rbvg_scripting::Envelope::player(
+                rbvg_scripting::ScriptEvent::BlockBroken {
+                    pos: POS,
+                    block: "core:dirt".into(),
+                },
+            )],
+        })
         .add_plugins(SavePlugin);
         app.world_mut().spawn((
             Transform::from_xyz(30.0, 90.0, 30.0),
@@ -318,7 +327,9 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(app.world().resource::<Scripts>().0.scheduled_count(), 0);
-        assert!(app.world().resource::<DeferredEvents>().0.is_empty());
+        let deferred = app.world().resource::<DeferredEvents>();
+        assert!(deferred.pending.is_empty());
+        assert!(deferred.ready.is_empty());
         assert_eq!(app.world().resource::<CreativeMenu>().index, 0);
         let mut players = app.world_mut().query::<(&Transform, &Player)>();
         let (transform, player) = players.single(app.world()).unwrap();
@@ -396,7 +407,7 @@ mod tests {
                 .is_current_generation(job.pos, job.ticket)
         );
         assert_eq!(app.world().resource::<Scripts>().0.scheduled_count(), 1);
-        assert_eq!(app.world().resource::<DeferredEvents>().0.len(), 1);
+        assert_eq!(app.world().resource::<DeferredEvents>().pending.len(), 1);
         assert!(app.world().resource::<Target>().0.is_some());
         assert_eq!(app.world().resource::<Messages<BlockChanged>>().len(), 1);
         assert_eq!(app.world().resource::<Messages<InteractRequest>>().len(), 1);

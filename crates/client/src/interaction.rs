@@ -212,7 +212,11 @@ fn edit_blocks(
         let Some(block) = hotbar.current() else {
             return;
         };
-        if blocks.0.get(block).is_none_or(|def| def.missing) {
+        if blocks
+            .0
+            .get(block)
+            .is_none_or(|def| def.missing || !def.solid)
+        {
             return;
         }
         let pos = hit.adjacent();
@@ -352,11 +356,19 @@ mod tests {
     #[test]
     fn mouse_clicks_break_place_and_respect_cancellation() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let registry = crate::load_content(&root).unwrap();
+        let mut registry = crate::load_content(&root).unwrap();
+        registry
+            .load_toml(
+                "test",
+                "format_version = 1\n[[blocks]]\nid = \"test:glass\"\n\
+                 display_name = \"Glass\"\nsolid = false\ncolor = [0.5, 0.5, 0.5]",
+            )
+            .unwrap();
         let (stone, wood) = (
             registry.id("core:stone").unwrap(),
             registry.id("core:wood").unwrap(),
         );
+        let glass = registry.id("test:glass").unwrap();
         let manifest = ModManifest::load(&root.join("mods/ancient_shrine")).unwrap();
         let mut host = ScriptHost::new(ScriptHostConfig::default());
         host.load_mod_source(
@@ -421,6 +433,10 @@ mod tests {
         let above = BlockPos::new(0, 196, 0);
         let block = |app: &App, pos: BlockPos| app.world().resource::<GameWorld>().0.get_block(pos);
 
+        app.world_mut().resource_mut::<Hotbar>().slots[0] = glass;
+        assert!(click(&mut app, MouseButton::Right).is_empty());
+        assert_eq!(block(&app, above), BlockId::AIR);
+        app.world_mut().resource_mut::<Hotbar>().slots[0] = wood;
         assert_eq!(click(&mut app, MouseButton::Right), ["placed core:wood"]);
         assert_eq!(block(&app, above), wood);
         // Wood is protected: the break is cancelled and no notification is raised.
@@ -497,5 +513,105 @@ mod tests {
             .map(|n| n.0)
             .collect();
         assert_eq!(notes, ["ancient_shrine:altar"]);
+    }
+
+    #[test]
+    fn before_break_overflow_waits_until_the_next_frame() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let registry = crate::load_content(&root).unwrap();
+        let manifest = ModManifest::load(&root.join("mods/ancient_shrine")).unwrap();
+        let mut host = ScriptHost::new(ScriptHostConfig::default());
+        host.load_mod_source(
+            &manifest,
+            r#"
+            events.subscribe("before_block_break", function()
+                for y = 128, 143 do
+                    for z = 0, 15 do
+                        world.set_block({ x = 0, y = y, z = z }, "core:stone")
+                    end
+                end
+            end)
+            events.subscribe("block_placed", function(e)
+                if e.position.x == 0 then
+                    world.set_block({ x = 1, y = e.position.y, z = e.position.z }, e.block)
+                end
+                ui.notify("placed")
+            end)
+            "#,
+        )
+        .unwrap();
+        let ground = BlockPos::new(0, 195, 0);
+        let mut world = VoxelWorld::new(7, Arc::new(TerrainGenerator::new(7, &registry).unwrap()));
+        world.load_chunk(ground.chunk());
+        world.load_chunk(BlockPos::new(0, 128, 0).chunk());
+        world
+            .set_block(ground, registry.id("core:stone").unwrap())
+            .unwrap();
+        let hotbar = Hotbar(BlockSelection::new(&registry));
+        let mut app = App::new();
+        app.insert_resource(GameWorld(world))
+            .insert_resource(Blocks(Arc::new(registry)))
+            .insert_resource(Scripts(host))
+            .insert_resource(hotbar)
+            .insert_resource(InteractionSettings { reach: 6.0 })
+            .init_resource::<Target>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .insert_resource(Time::<()>::default())
+            .add_message::<BlockChanged>()
+            .add_plugins(ScriptingPlugin)
+            .add_systems(
+                Update,
+                (update_target, edit_blocks)
+                    .chain()
+                    .in_set(InteractionSystems),
+            );
+        app.world_mut().spawn(CursorOptions {
+            grab_mode: bevy::window::CursorGrabMode::Locked,
+            ..default()
+        });
+        app.world_mut().spawn((
+            Player::default(),
+            Transform::from_xyz(0.5, 199.5, 0.5).looking_to(Vec3::NEG_Y, Vec3::Z),
+        ));
+        app.update();
+
+        let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+        mouse.reset_all();
+        mouse.press(MouseButton::Left);
+        app.update();
+        assert_eq!(
+            app.world().resource::<GameWorld>().0.get_block(ground),
+            BlockId::AIR
+        );
+        let first_frame_notifications = app
+            .world_mut()
+            .resource_mut::<Messages<Notification>>()
+            .drain()
+            .count();
+        assert_eq!(first_frame_notifications, 256);
+        assert_eq!(
+            app.world()
+                .resource::<crate::scripting::DeferredEvents>()
+                .pending
+                .len(),
+            256
+        );
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .reset_all();
+        app.update();
+        let next_frame_notifications = app
+            .world_mut()
+            .resource_mut::<Messages<Notification>>()
+            .drain()
+            .count();
+        assert_eq!(next_frame_notifications, 256);
+        assert!(
+            app.world()
+                .resource::<crate::scripting::DeferredEvents>()
+                .pending
+                .is_empty()
+        );
     }
 }

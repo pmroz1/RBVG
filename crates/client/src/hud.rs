@@ -245,6 +245,8 @@ fn update_creative(
             def.id,
             if def.missing {
                 " — MISSING, unavailable"
+            } else if !def.solid {
+                " — unavailable"
             } else {
                 ""
             },
