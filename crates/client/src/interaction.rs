@@ -589,13 +589,22 @@ mod tests {
             .drain()
             .count();
         assert_eq!(first_frame_notifications, 256);
-        assert_eq!(
-            app.world()
-                .resource::<crate::scripting::DeferredEvents>()
-                .pending
-                .len(),
-            256
-        );
+        let deferred = &app
+            .world()
+            .resource::<crate::scripting::DeferredEvents>()
+            .pending;
+        assert_eq!(deferred.len(), 256);
+        assert!(deferred.iter().all(|event| event.depth == 2));
+        assert!(matches!(
+            deferred.first().map(|event| &event.event),
+            Some(ScriptEvent::BlockPlaced { pos, .. })
+                if *pos == BlockPos::new(1, 128, 0)
+        ));
+        assert!(matches!(
+            deferred.last().map(|event| &event.event),
+            Some(ScriptEvent::BlockPlaced { pos, .. })
+                if *pos == BlockPos::new(1, 143, 15)
+        ));
 
         app.world_mut()
             .resource_mut::<ButtonInput<MouseButton>>()

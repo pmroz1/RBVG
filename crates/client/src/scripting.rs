@@ -224,6 +224,7 @@ fn dispatch_player_events(
     if events.is_empty() {
         return;
     }
+    let mut current_frame_deferred = std::mem::take(&mut deferred.pending);
     let aabb = Player::aabb(player.translation);
     for n in run_pump(
         &scripts,
@@ -237,6 +238,7 @@ fn dispatch_player_events(
     ) {
         notes.write(n);
     }
+    deferred.pending.append(&mut current_frame_deferred);
 }
 
 fn tick_scheduler(
